@@ -1,0 +1,51 @@
+Bootstrap: docker
+From: debian:bookworm
+Stage: build
+
+%environment
+	export LC_ALL=C
+
+%post
+	export DEBIAN_FRONTEND=noninteractive
+	export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+
+	# freshen bits
+	apt-get update && apt-get upgrade -y
+
+	# mod-host dependencies
+	apt-get install -y \
+		wget \
+		build-essential \
+		bison \
+		flex \
+		libsndfile1-dev \
+		libasound2-dev \
+		libjack-jackd2-dev
+
+
+	# chuck build
+	wget https://chuck.stanford.edu/release/files/chuck-1.5.3.1.tgz
+	tar zxvf chuck-1.5.3.1.tgz
+	cd chuck-1.5.3.1/src/
+	make linux-jack
+	make install
+	rm -rf chuck-1.5.3.1
+
+Bootstrap: docker
+From: debian:bookworm-slim
+Stage: final
+
+%files from build
+	/usr/local/* /usr/local/
+	
+%post
+	apt-get update
+	apt-get install -y -q \
+		libsndfile1 \
+		libasound2 \
+		libjack-jackd2-0
+	rm -rf /var/lib/apt/lists/*
+
+	
+%runscript
+	/usr/local/bin/chuck $*

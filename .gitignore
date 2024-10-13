@@ -1,2 +1,9 @@
+# editor temporaries
 *~
+
+# singularity build artifacts
 *.sif
+
+# sbcl build artifacts
+*.bin
+*.core

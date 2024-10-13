@@ -1,0 +1,116 @@
+Bootstrap: library
+From: debian:11
+Stage: build
+
+
+%environment
+	export LC_ALL=C
+
+%post
+	export DEBIAN_FRONTEND=noninteractive
+	export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+	
+	apt-get update && apt-get upgrade -y
+
+	# common build
+	apt-get install -y pkg-config cmake cmake-data git python gcc g++ ninja-build make \
+		python3-pip wget \
+		debconf-utils  # for debconf-set-selections
+
+	# libmonome build
+	apt-get install -y libevdev-dev liblo-dev libudev-dev 
+
+	git clone https://github.com/monome/libmonome.git
+	cd libmonome
+	./waf configure
+	./waf
+	./waf install
+	cd ..
+	rm -rf libmonome
+
+	# # jackd build
+	# git clone https://github.com/jackaudio/jack2.git
+	# cd jack2
+	# ./waf configure
+	# ./waf build
+	# ./waf install
+	# cd ..
+	# rm -rf jack2
+
+	# # jack_tools (needed by cl-collider to make connections)
+	# #pip3 install --prefix=/usr meson
+ 	# git clone https://github.com/jackaudio/jack-example-tools.git
+ 	# cd jack-example-tools
+	# wget https://github.com/mesonbuild/meson/releases/download/1.2.2/meson-1.2.2.tar.gz
+	# tar zxvf meson-1.2.2.tar.gz
+	# ln -s meson-1.2.2 meson
+	# ./meson/meson.py --prefix=/usr/local build
+	# cd build
+	# ../meson/meson.py compile
+	# ../meson/meson.py install
+	# cd ../..
+	# rm -rf jack-example-tools
+	
+ 	# # supercollider build
+	# #echo "debconf jackd/tweak_rt_limits boolean true" | debconf-set-selections
+	# apt-get install -y -q libsamplerate0-dev libsndfile1-dev libasound2-dev libavahi-client-dev \
+	# 	libreadline-dev libfftw3-dev libncurses5-dev #\
+	#  	#libjack-jackd2-dev \
+	#  	#jackd2
+
+	# PIN_SUPERCOLLIDER=Version-3.13.0
+
+	# git clone --recursive --depth 1 --branch $PIN_SUPERCOLLIDER \
+	#       https://github.com/supercollider/supercollider.git
+	# mkdir supercollider/build
+	# cd supercollider/build
+	# cmake -DCMAKE_BUILD_TYPE=Release \
+	#       -DNATIVE=1 \
+	#       -DSSE=0 \
+	#       -DSSE2=0 \
+	#       -DENABLE_TESTSUITE=0 \
+	#       -DCMAKE_SKIP_RPATH=1 \
+	#       -DLIBSCSYNTH=0 \
+	#       -DSUPERNOVA=0 \
+	#       -DSC_IDE=0 \
+	#       -DSC_ED=0 \
+	#       -DSC_EL=0 \
+	#       -DSC_VIM=1 \
+	#       -DNO_X11=ON -DSC_QT=OFF ..
+	# make install
+	# cd ..
+	# rm -rf supercollider
+	
+	# sbcl install
+	apt-get install -y sbcl
+
+        PIN_SBCL=2.4.8
+	wget https://github.com/sbcl/sbcl/archive/refs/tags/sbcl-${PIN_SBCL}.tar.gz
+	tar zxvf sbcl-${PIN_SBCL}.tar.gz
+	cd sbcl-sbcl-${PIN_SBCL}
+	sh make.sh /usr/bin/sbcl
+	sh install.sh
+
+
+Bootstrap: library
+From: debian:11
+Stage: final
+
+%files from build
+       /usr/local/* /usr/local/
+
+%post
+	apt-get update && \
+	apt-get install -y -q libsamplerate0 libsndfile1 libasound2 libavahi-client3 \
+		libreadline8 libfftw3-bin libncurses5 \
+		libevdev2 liblo7 libudev1 && \
+	rm -rf /var/lib/apt/lists/*
+
+	# cleanup empty python dirs
+	rm -rf /usr/local/lib/python*
+
+%runscript
+	cd $HOME
+	sbcl
+
+

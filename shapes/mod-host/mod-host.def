@@ -1,0 +1,74 @@
+Bootstrap: docker
+From: debian:bookworm
+Stage: build
+
+%environment
+	export LC_ALL=C
+
+%post
+	export DEBIAN_FRONTEND=noninteractive
+	export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+	
+	apt-get update && apt-get upgrade -y
+
+	# common build
+	apt-get install -y \
+		build-essential \
+		pkg-config \
+		python3 \
+		git \
+		gcc \
+		g++ \
+		make \
+		wget
+		
+	# mod-host dependencies
+	apt-get install -y \
+		libreadline-dev \
+		liblilv-dev \
+		lilv-utils \
+		libfftw3-dev \
+		libjack-jackd2-dev
+
+	# mod-host build
+	git clone https://github.com/mod-audio/mod-host.git
+	cd mod-host
+	make
+	make install
+	rm -rf mod-host
+
+Bootstrap: docker
+From: debian:bookworm-slim
+Stage: final
+
+%files from build
+	/usr/local/* /usr/local/
+	/usr/lib/x86_64-linux-gnu/jack/* /usr/lib/x86_64-linux-gnu/jack/
+	
+%post
+	apt-get update && apt-get install -y -q \
+		libjack-jackd2-0 \
+		liblilv-0-0 \
+		libreadline8 \
+		lilv-utils \
+		libfftw3-bin
+
+
+	# example plugins
+	apt-get install -y \
+		samplv1-lv2 \
+		mda-lv2 \
+		lv2proc \
+		lv2file \
+		lv2-examples \
+		synthv1-lv2 \
+		x42-plugins \
+		zam-plugins \
+		ir.lv2 \
+		guitarix-lv2
+
+	rm -rf /var/lib/apt/lists/*
+
+	
+%runscript
+	/usr/local/bin/mod-host $*

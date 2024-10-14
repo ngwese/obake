@@ -10,4 +10,4 @@ by default singularity does not bind mount /run/udev into the container. serialo
 
 to map udev into the container, either:
 - `SINGULARITY_BIND="/run/udev:/run/udev" ./serialosc.sif`
-- `singularity run --bind /run/udev:/run/udev serialosc.sif
+- `singularity run --bind /run/udev:/run/udev serialosc.sif`

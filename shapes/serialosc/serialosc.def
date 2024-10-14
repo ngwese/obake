@@ -13,6 +13,7 @@ Stage: build
 	apt-get update && apt-get upgrade -y
 
 	apt-get install -y \
+		sed \
 		wget \
 		build-essential \
 		git \
@@ -33,6 +34,8 @@ Stage: build
 	# serialosc build
 	git clone --depth=1 --recursive https://github.com/monome/serialosc.git
 	cd serialosc
+	# NOTE: quick hack, on bookworm the compat library is always versioned
+	sed -i 's/libdns_sd.so/libdns_sd.so.1/g' src/serialosc-device/zeroconf/not_darwin.c
 	./waf configure
 	./waf install
 
@@ -54,7 +57,7 @@ Stage: final
 		libevdev2 \
 		libuv1 \
 		libavahi-compat-libdnssd1 \
-		liblo-tools \
+		liblo-tools
 	rm -rf /var/lib/apt/lists/*
 
 	# make libmonome findable

@@ -1,0 +1,67 @@
+Bootstrap: docker
+From: debian:bookworm
+Stage: build
+
+%environment
+	export LC_ALL=C
+
+%post
+	export DEBIAN_FRONTEND=noninteractive
+	export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+
+	# freshen bits
+	apt-get update && apt-get upgrade -y
+
+	apt-get install -y \
+		wget \
+		build-essential \
+		git \
+		python3 \
+		python-is-python3
+		
+	# libmonome build
+	apt-get install -y libevdev-dev liblo-dev libudev-dev libuv1-dev libavahi-compat-libdnssd-dev
+
+	mkdir /build
+	cd /build
+	
+	git clone --depth=1 https://github.com/monome/libmonome.git
+	cd libmonome
+	./waf configure
+	./waf install
+
+	# serialosc build
+	git clone --depth=1 --recursive https://github.com/monome/serialosc.git
+	cd serialosc
+	./waf configure
+	./waf install
+
+	# cleanup
+	rm -rf /build
+
+Bootstrap: docker
+From: debian:bookworm-slim
+Stage: final
+
+%files from build
+	/usr/local/* /usr/local/
+	
+%post
+	apt-get update
+	apt-get install -y -q \
+		liblo7 \
+		libudev1 \
+		libevdev2 \
+		libuv1 \
+		libavahi-compat-libdnssd1 \
+		liblo-tools \
+	rm -rf /var/lib/apt/lists/*
+
+	# make libmonome findable
+	ldconfig /usr/local/lib64
+	
+	# create bind mount point for udev
+	mkdir /run/udev 
+	
+%runscript
+	/usr/local/bin/serialoscd $*

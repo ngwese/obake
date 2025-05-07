@@ -1,5 +1,5 @@
 - name: setup mdns
-  hosts: all
+  hosts: obake_hosts
   remote_user: root
   gather_facts: false
 
@@ -10,18 +10,18 @@
       state: present
 
 - name: setup jack
-  hosts: all
+  hosts: obake_hosts
   remote_user: root
   gather_facts: false
 
   tasks:
-  - name: Ping
+  - name: install jackd2
     ansible.builtin.package:
       name: jackd2
       state: present
 
 - name: configure udev
-  hosts: all
+  hosts: obake_hosts
   remote_user: root
   gather_facts: false
 
@@ -40,5 +40,20 @@
       dest: /etc/udev/rules.d/
     with_fileglob:
       - "../host/udev/*.rules"
+
+  - name: install dev packages
+    vars:
+      # obake_env: "prod"
+      packages:
+      - libevdev-dev
+      - liblo-dev
+      - libudev-dev
+      - libasound2-dev
+      - libsndfile1-dev
+      - libjack-jackd2-dev
+    ansible.builtin.package:
+      name: "{{ packages }}"
+      state: present
+    when: obake_env == "dev"
 
 

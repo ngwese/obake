@@ -1,0 +1,44 @@
+- name: setup mdns
+  hosts: all
+  remote_user: root
+  gather_facts: false
+
+  tasks:
+  - name: install avahi
+    ansible.builtin.package:
+      name: avahi-daemon
+      state: present
+
+- name: setup jack
+  hosts: all
+  remote_user: root
+  gather_facts: false
+
+  tasks:
+  - name: Ping
+    ansible.builtin.package:
+      name: jackd2
+      state: present
+
+- name: configure udev
+  hosts: all
+  remote_user: root
+  gather_facts: false
+
+  tasks:
+  - name: install usb_modeswitch
+    ansible.builtin.package:
+      name: usb-modeswitch
+      state: present
+
+  - name: copy udev rules
+    ansible.builtin.copy:
+      owner: root
+      group: root
+      mode: 0644
+      src: "{{ item }}"
+      dest: /etc/udev/rules.d/
+    with_fileglob:
+      - "../host/udev/*.rules"
+
+

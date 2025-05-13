@@ -1,0 +1,87 @@
+Bootstrap: docker
+From: debian:bookworm
+Stage: build
+
+%environment
+	export LC_ALL=C
+
+%files
+	rnbo-src-1.3.4.tgz
+	conan-x86_64-default
+
+%post
+	# work from the /build directory
+	mkdir -pv /build && cd /build
+
+	export DEBIAN_FRONTEND=noninteractive
+	export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
+
+	# # freshen bits
+	apt-get update && apt-get upgrade -y
+
+	# # build dependencies
+	apt-get install -y \
+		wget \
+		cmake \
+		build-essential \
+		libavahi-compat-libdnssd-dev \
+		libssl-dev \
+		libjack-jackd2-dev \
+		libdbus-1-dev \
+		libxml2-dev \
+		libgmock-dev \
+		google-mock \
+		python3-pip \
+		ruby \
+		libsndfile1-dev
+
+	# setup conan
+	pip3 install --break-system-packages conan==1.61.0
+	mkdir -pv /root/.conan/profiles
+	mv /conan-x86_64-default /root/.conan/profiles/default
+
+	# rnbo source
+	mkdir -pv /usr/local/src/
+	tar zxvf /rnbo-src-1.3.4.tgz -C /usr/local/src/
+
+	# runner build
+	wget https://github.com/Cycling74/rnbo.oscquery.runner/archive/refs/tags/rnbo_v1.3.4.tar.gz
+	tar zxvf rnbo_v1.3.4.tar.gz
+	cd rnbo.oscquery.runner-rnbo_v1.3.4/
+	mkdir release/
+	cd release/
+	cmake .. -DCMAKE_BUILD_TYPE=Release -DWITH_DBUS=Off -DWITH_JACKSERVER=Off -DRNBO_DIR=/usr/local/src/rnbo
+	cmake --build . --verbose
+	cpack --verbose
+
+Bootstrap: docker
+From: debian:bookworm-slim
+Stage: final
+
+%files from build
+	/build/rnbo.oscquery.runner-rnbo_v1.3.4/release/rnbooscquery_1.3.4_amd64.deb /rnbooscquery.deb
+
+%post
+	apt-get update
+
+	apt-get install -y -q \
+		cmake \
+		build-essential \
+		libavahi-compat-libdnssd-dev \
+		libssl-dev \
+		libjack-jackd2-dev \
+		libdbus-1-dev \
+		libxml2-dev \
+		libgmock-dev \
+		libsndfile1-dev \
+		google-mock \
+		python3-pip \
+		ruby
+
+	rm -rf /var/lib/apt/lists/*
+
+	dpkg -i /rnbooscquery.deb
+	rm -f /rnbooscquery.deb
+
+%runscript
+	/usr/bin/rnbooscquery $*

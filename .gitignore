@@ -7,3 +7,5 @@
 # sbcl build artifacts
 *.bin
 *.core
+
+*.tgz

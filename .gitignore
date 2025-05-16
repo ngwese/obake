@@ -9,3 +9,5 @@
 *.core
 
 *.tgz
+
+shapes/*/dist/

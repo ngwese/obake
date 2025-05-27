@@ -6,6 +6,8 @@ Stage: build
 	export LC_ALL=C
 
 %post
+        export PIN_CHUCK=1.5.5.0
+
 	export DEBIAN_FRONTEND=noninteractive
 	export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
 
@@ -24,12 +26,12 @@ Stage: build
 
 
 	# chuck build
-	wget https://chuck.stanford.edu/release/files/chuck-1.5.3.1.tgz
-	tar zxvf chuck-1.5.3.1.tgz
-	cd chuck-1.5.3.1/src/
+	wget https://chuck.stanford.edu/release/files/chuck-${PIN_CHUCK}.tgz
+	tar zxvf chuck-${PIN_CHUCK}.tgz
+	cd chuck-${PIN_CHUCK}/src/
 	make linux-jack
 	make install
-	rm -rf chuck-1.5.3.1
+	rm -rf chuck-${PIN_CHUCK}
 
 Bootstrap: docker
 From: debian:bookworm-slim

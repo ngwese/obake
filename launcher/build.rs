@@ -6,14 +6,17 @@ fn main() {
     // Tell cargo to rerun this build script if the git repository changes
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/index");
-    
+
     let version = get_version();
-    
+
     // Write the version to a file that can be included at compile time
     let out_dir = env::var("OUT_DIR").unwrap();
     let dest_path = Path::new(&out_dir).join("version.rs");
-    fs::write(&dest_path, format!("pub const VERSION: &str = \"{}\";", version))
-        .expect("Failed to write version file");
+    fs::write(
+        &dest_path,
+        format!("pub const VERSION: &str = \"{}\";", version),
+    )
+    .expect("Failed to write version file");
 }
 
 fn get_version() -> String {
@@ -27,20 +30,20 @@ fn get_version() -> String {
 
     // Check if the working directory is dirty
     let is_dirty = is_working_dir_dirty(&repo);
-    
+
     // Get the current commit
     let head = match repo.head() {
         Ok(head) => head,
         Err(_) => return "unknown".to_string(),
     };
-    
+
     let commit = match head.peel_to_commit() {
         Ok(commit) => commit,
         Err(_) => return "unknown".to_string(),
     };
-    
+
     let short_sha = &commit.id().to_string()[..8];
-    
+
     // Try to find the most recent tag
     let mut tags = Vec::new();
     let _ = repo.tag_foreach(|_id, name| {
@@ -56,7 +59,7 @@ fn get_version() -> String {
         }
         true
     });
-    
+
     // Find the most recent tag that points to the current commit or an ancestor
     let mut best_tag = None;
     for (tag_name, tag_commit_id) in tags {
@@ -73,7 +76,7 @@ fn get_version() -> String {
             }
         }
     }
-    
+
     match best_tag {
         Some(tag) => {
             if is_dirty {

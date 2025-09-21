@@ -8,4 +8,6 @@ default-interface = "mixpre"
 "adat" = { type = "jack", unit = "jack@adat.service" }
 
 [data]
-user-data-dir = "/home/obake/data"
+images-dir = "/home/obake/shapes"
+setups-dir = "/home/obake/setups"
+data-dir = "/home/obake/data"

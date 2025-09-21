@@ -10,12 +10,15 @@ use std::path::Path;
 /// Main configuration structure for the Obake launcher application.
 ///
 /// This structure represents the complete configuration loaded from the TOML file,
-/// containing all application settings including audio interface configurations.
+/// containing all application settings including audio interface configurations
+/// and data directory settings.
 ///
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
     /// Audio configuration section containing interface settings
     pub audio: AudioConfig,
+    /// Data configuration section containing directory paths
+    pub data: DataConfig,
 }
 
 /// Audio configuration containing default interface and available interfaces.
@@ -92,6 +95,68 @@ pub struct AudioInterface {
     /// "alsa" = { type = "alsa" }
     /// ```
     pub unit: Option<String>,
+}
+
+/// Data configuration containing directory paths for the application.
+///
+/// This structure holds all data-related configuration including paths to
+/// directories where images, setups, and data files are stored.
+///
+/// # Example
+///
+/// ```rust
+/// use crate::config::Config;
+///
+/// let config = Config::load()?;
+///
+/// // Get data directory paths
+/// println!("Images directory: {}", config.data.images_dir);
+/// println!("Setups directory: {}", config.data.setups_dir);
+/// println!("Data directory: {}", config.data.data_dir);
+/// ```
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DataConfig {
+    /// Directory path where shape images are stored
+    ///
+    /// This directory contains container images and other files
+    /// related to shape definitions.
+    ///
+    /// # Example
+    ///
+    /// ```toml
+    /// [data]
+    /// images-dir = "/home/obake/shapes"
+    /// ```
+    #[serde(rename = "images-dir")]
+    pub images_dir: String,
+
+    /// Directory path where setup configurations are stored
+    ///
+    /// This directory contains setup configuration files
+    /// that define how shapes should be configured.
+    ///
+    /// # Example
+    ///
+    /// ```toml
+    /// [data]
+    /// setups-dir = "/home/obake/setups"
+    /// ```
+    #[serde(rename = "setups-dir")]
+    pub setups_dir: String,
+
+    /// Directory path where application data is stored
+    ///
+    /// This directory contains runtime data, logs, and other
+    /// application-specific files.
+    ///
+    /// # Example
+    ///
+    /// ```toml
+    /// [data]
+    /// data-dir = "/home/obake/data"
+    /// ```
+    #[serde(rename = "data-dir")]
+    pub data_dir: String,
 }
 
 impl Config {
@@ -361,6 +426,120 @@ impl Config {
     pub fn list_audio_interfaces(&self) -> Vec<&String> {
         self.audio.interfaces.keys().collect()
     }
+
+    /// Get the images directory path.
+    ///
+    /// This method returns the path to the directory where shape images
+    /// and container files are stored.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the images directory path string.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use crate::config::Config;
+    ///
+    /// let config = Config::load()?;
+    ///
+    /// // Get the images directory path
+    /// let images_dir = config.get_images_dir();
+    /// println!("Images directory: {}", images_dir);
+    ///
+    /// // Use the path to load an image
+    /// let image_path = format!("{}/my_shape.sif", images_dir);
+    /// ```
+    pub fn get_images_dir(&self) -> &String {
+        &self.data.images_dir
+    }
+
+    /// Get the setups directory path.
+    ///
+    /// This method returns the path to the directory where setup
+    /// configuration files are stored.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the setups directory path string.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use crate::config::Config;
+    ///
+    /// let config = Config::load()?;
+    ///
+    /// // Get the setups directory path
+    /// let setups_dir = config.get_setups_dir();
+    /// println!("Setups directory: {}", setups_dir);
+    ///
+    /// // Use the path to load a setup file
+    /// let setup_path = format!("{}/my_setup.toml", setups_dir);
+    /// ```
+    pub fn get_setups_dir(&self) -> &String {
+        &self.data.setups_dir
+    }
+
+    /// Get the data directory path.
+    ///
+    /// This method returns the path to the directory where application
+    /// data, logs, and runtime files are stored.
+    ///
+    /// # Returns
+    ///
+    /// A reference to the data directory path string.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use crate::config::Config;
+    ///
+    /// let config = Config::load()?;
+    ///
+    /// // Get the data directory path
+    /// let data_dir = config.get_data_dir();
+    /// println!("Data directory: {}", data_dir);
+    ///
+    /// // Use the path to store application data
+    /// let log_path = format!("{}/application.log", data_dir);
+    /// ```
+    pub fn get_data_dir(&self) -> &String {
+        &self.data.data_dir
+    }
+
+    /// Get all data directory paths.
+    ///
+    /// This method returns a tuple containing all three data directory paths
+    /// for convenient access to all data-related paths at once.
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing references to (images_dir, setups_dir, data_dir).
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use crate::config::Config;
+    ///
+    /// let config = Config::load()?;
+    ///
+    /// // Get all data directory paths
+    /// let (images_dir, setups_dir, data_dir) = config.get_data_dirs();
+    /// println!("Images: {}, Setups: {}, Data: {}", images_dir, setups_dir, data_dir);
+    ///
+    /// // Use the paths for various operations
+    /// let image_path = format!("{}/shape.sif", images_dir);
+    /// let setup_path = format!("{}/setup.toml", setups_dir);
+    /// let log_path = format!("{}/app.log", data_dir);
+    /// ```
+    pub fn get_data_dirs(&self) -> (&String, &String, &String) {
+        (
+            &self.data.images_dir,
+            &self.data.setups_dir,
+            &self.data.data_dir,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -401,6 +580,11 @@ default-interface = "test"
 
 [audio.interfaces]
 "test" = { type = "test", unit = "test.service" }
+
+[data]
+images-dir = "/test/images"
+setups-dir = "/test/setups"
+data-dir = "/test/data"
 "#;
 
         // Create a temporary file
@@ -418,6 +602,21 @@ default-interface = "test"
         assert_eq!(config.audio.default_interface, "test");
         assert!(config.audio.interfaces.contains_key("test"));
 
+        // Test data configuration
+        assert_eq!(config.data.images_dir, "/test/images");
+        assert_eq!(config.data.setups_dir, "/test/setups");
+        assert_eq!(config.data.data_dir, "/test/data");
+
+        // Test data helper methods
+        assert_eq!(config.get_images_dir(), "/test/images");
+        assert_eq!(config.get_setups_dir(), "/test/setups");
+        assert_eq!(config.get_data_dir(), "/test/data");
+
+        let (images_dir, setups_dir, data_dir) = config.get_data_dirs();
+        assert_eq!(images_dir, "/test/images");
+        assert_eq!(setups_dir, "/test/setups");
+        assert_eq!(data_dir, "/test/data");
+
         // Clean up is automatic when temp_file goes out of scope
     }
 
@@ -431,6 +630,11 @@ default-interface = "alsa"
 [audio.interfaces]
 "alsa" = { type = "alsa" }
 "jack" = { type = "jack", unit = "jack.service" }
+
+[data]
+images-dir = "/test/images"
+setups-dir = "/test/setups"
+data-dir = "/test/data"
 "#;
 
         // Create a temporary file
@@ -458,6 +662,63 @@ default-interface = "alsa"
             assert!(jack_interface.unit.is_some());
             assert_eq!(jack_interface.unit.as_ref().unwrap(), "jack.service");
         }
+
+        // Clean up is automatic when temp_file goes out of scope
+    }
+
+    #[test]
+    fn test_data_configuration() {
+        // Test data configuration loading and access
+        let test_config = r#"
+[audio]
+default-interface = "test"
+
+[audio.interfaces]
+"test" = { type = "test" }
+
+[data]
+images-dir = "/custom/images"
+setups-dir = "/custom/setups"
+data-dir = "/custom/data"
+"#;
+
+        // Create a temporary file
+        let temp_file = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
+        let config_path = temp_file.path().to_str().unwrap();
+
+        // Write config content to temporary file
+        std::fs::write(config_path, test_config).unwrap();
+
+        // Test loading from the temporary path
+        let config = Config::load_from_path(config_path);
+        assert!(config.is_ok());
+
+        let config = config.unwrap();
+
+        // Test direct access to data fields
+        assert_eq!(config.data.images_dir, "/custom/images");
+        assert_eq!(config.data.setups_dir, "/custom/setups");
+        assert_eq!(config.data.data_dir, "/custom/data");
+
+        // Test individual getter methods
+        assert_eq!(config.get_images_dir(), "/custom/images");
+        assert_eq!(config.get_setups_dir(), "/custom/setups");
+        assert_eq!(config.get_data_dir(), "/custom/data");
+
+        // Test tuple getter method
+        let (images_dir, setups_dir, data_dir) = config.get_data_dirs();
+        assert_eq!(images_dir, "/custom/images");
+        assert_eq!(setups_dir, "/custom/setups");
+        assert_eq!(data_dir, "/custom/data");
+
+        // Test that the paths can be used to construct file paths
+        let image_path = format!("{}/shape.sif", config.get_images_dir());
+        let setup_path = format!("{}/setup.toml", config.get_setups_dir());
+        let log_path = format!("{}/app.log", config.get_data_dir());
+
+        assert_eq!(image_path, "/custom/images/shape.sif");
+        assert_eq!(setup_path, "/custom/setups/setup.toml");
+        assert_eq!(log_path, "/custom/data/app.log");
 
         // Clean up is automatic when temp_file goes out of scope
     }

@@ -1,3 +1,4 @@
+use anyhow::Result;
 use figment::{
     Figment,
     providers::{Format, Toml},
@@ -211,7 +212,7 @@ impl Config {
     /// ```bash
     /// export OBAKE_CONFIG_FILE="/path/to/custom/config.toml"
     /// ```
-    pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load() -> Result<Self> {
         // Check if OBAKE_CONFIG_FILE environment variable is set
         if let Ok(config_file) = std::env::var("OBAKE_CONFIG_FILE") {
             debug!(
@@ -241,11 +242,10 @@ impl Config {
         }
 
         // If no configuration file found, return an error
-        Err(format!(
+        Err(anyhow::anyhow!(
             "No configuration file found. Searched in: {}",
             search_paths.join(", ")
-        )
-        .into())
+        ))
     }
 
     /// Load configuration from a custom file path.
@@ -285,7 +285,7 @@ impl Config {
     /// // Load user-specific configuration
     /// let user_config = Config::load_from_path("~/.config/obake.toml")?;
     /// ```
-    pub fn load_from_path(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load_from_path(path: &str) -> Result<Self> {
         let config: Config = Figment::new().merge(Toml::file(path)).extract()?;
         debug!("loaded config from path: {}", path);
         Ok(config)
@@ -326,6 +326,7 @@ impl Config {
     ///               config.audio.default_interface);
     /// }
     /// ```
+    #[allow(dead_code)]
     pub fn get_default_audio_interface(&self) -> Option<&AudioInterface> {
         self.audio.interfaces.get(&self.audio.default_interface)
     }
@@ -504,41 +505,9 @@ impl Config {
     /// // Use the path to store application data
     /// let log_path = format!("{}/application.log", data_dir);
     /// ```
+    #[allow(dead_code)]
     pub fn get_data_dir(&self) -> &String {
         &self.data.data_dir
-    }
-
-    /// Get all data directory paths.
-    ///
-    /// This method returns a tuple containing all three data directory paths
-    /// for convenient access to all data-related paths at once.
-    ///
-    /// # Returns
-    ///
-    /// A tuple containing references to (images_dir, setups_dir, data_dir).
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use crate::config::Config;
-    ///
-    /// let config = Config::load()?;
-    ///
-    /// // Get all data directory paths
-    /// let (images_dir, setups_dir, data_dir) = config.get_data_dirs();
-    /// println!("Images: {}, Setups: {}, Data: {}", images_dir, setups_dir, data_dir);
-    ///
-    /// // Use the paths for various operations
-    /// let image_path = format!("{}/shape.sif", images_dir);
-    /// let setup_path = format!("{}/setup.toml", setups_dir);
-    /// let log_path = format!("{}/app.log", data_dir);
-    /// ```
-    pub fn get_data_dirs(&self) -> (&String, &String, &String) {
-        (
-            &self.data.images_dir,
-            &self.data.setups_dir,
-            &self.data.data_dir,
-        )
     }
 }
 
@@ -611,11 +580,6 @@ data-dir = "/test/data"
         assert_eq!(config.get_images_dir(), "/test/images");
         assert_eq!(config.get_setups_dir(), "/test/setups");
         assert_eq!(config.get_data_dir(), "/test/data");
-
-        let (images_dir, setups_dir, data_dir) = config.get_data_dirs();
-        assert_eq!(images_dir, "/test/images");
-        assert_eq!(setups_dir, "/test/setups");
-        assert_eq!(data_dir, "/test/data");
 
         // Clean up is automatic when temp_file goes out of scope
     }
@@ -704,12 +668,6 @@ data-dir = "/custom/data"
         assert_eq!(config.get_images_dir(), "/custom/images");
         assert_eq!(config.get_setups_dir(), "/custom/setups");
         assert_eq!(config.get_data_dir(), "/custom/data");
-
-        // Test tuple getter method
-        let (images_dir, setups_dir, data_dir) = config.get_data_dirs();
-        assert_eq!(images_dir, "/custom/images");
-        assert_eq!(setups_dir, "/custom/setups");
-        assert_eq!(data_dir, "/custom/data");
 
         // Test that the paths can be used to construct file paths
         let image_path = format!("{}/shape.sif", config.get_images_dir());

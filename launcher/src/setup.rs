@@ -1,3 +1,4 @@
+use anyhow::Result;
 use figment::{
     Figment,
     providers::{Format, Toml},
@@ -75,7 +76,7 @@ impl SetupConfig {
     /// // Load test setup configuration
     /// let test_config = SetupConfig::load_from_path("test_setup.toml")?;
     /// ```
-    pub fn load_from_path(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn load_from_path(path: &str) -> Result<Self> {
         debug!("Loading setup configuration from path: {}", path);
         let config: SetupConfig = Figment::new().merge(Toml::file(path)).extract()?;
 
@@ -161,6 +162,7 @@ impl SetupConfig {
     /// // Count available shapes
     /// println!("Total shapes configured: {}", available_shapes.len());
     /// ```
+    #[allow(dead_code)]
     pub fn list_shapes(&self) -> Vec<&String> {
         self.shapes.keys().collect()
     }
@@ -190,6 +192,7 @@ impl SetupConfig {
     ///     println!("Managing shape: {}", shape_name);
     /// }
     /// ```
+    #[allow(dead_code)]
     pub fn get_managed_shapes(&self) -> &Vec<String> {
         &self.setup.shapes
     }

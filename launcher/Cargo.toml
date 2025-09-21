@@ -1,0 +1,12 @@
+[package]
+name = "obake-launcher"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+env_logger = "0.10"
+log = "0.4.28"
+
+[build-dependencies]
+git2 = "0.18"

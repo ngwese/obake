@@ -864,6 +864,7 @@ dependencies = [
  "log",
  "serde",
  "systemd-zbus",
+ "tempfile",
  "tokio",
 ]
 

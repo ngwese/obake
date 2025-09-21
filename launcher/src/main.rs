@@ -36,6 +36,9 @@ enum Commands {
         /// Name of the shape to stop
         name: String,
     },
+
+    /// List available audio interfaces
+    AudioInterfaceList,
 }
 
 fn parse_log_level(level: &str) -> LevelFilter {
@@ -79,6 +82,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Commands::ShapeStop { name } => {
             shape_stop(&name).await?;
         }
+        Commands::AudioInterfaceList => {
+            audio_interface_list().await?;
+        }
     }
 
     Ok(())
@@ -120,5 +126,13 @@ async fn shape_stop(name: &str) -> Result<(), Box<dyn std::error::Error>> {
     let manager = get_manager().await?;
     manager.stop_unit(name, Mode::Replace).await?;
     info!("stopped unit: {:?}", name);
+    Ok(())
+}
+
+async fn audio_interface_list() -> Result<(), Box<dyn std::error::Error>> {
+    let config = config::Config::load()?;
+    for interface in config.audio.interfaces.keys() {
+        info!("audio interface: {:?}", interface);
+    }
     Ok(())
 }

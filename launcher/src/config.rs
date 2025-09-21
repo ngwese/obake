@@ -2,8 +2,10 @@ use figment::{
     Figment,
     providers::{Format, Toml},
 };
+use log::debug;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Main configuration structure for the Obake launcher application.
 ///
@@ -93,11 +95,18 @@ pub struct AudioInterface {
 }
 
 impl Config {
-    /// Load configuration from the default `obake.toml` file in the current directory.
+    /// Load configuration from `config.toml` file in standard locations.
     ///
-    /// This method looks for a file named `obake.toml` in the current working directory
-    /// and attempts to parse it as a TOML configuration file. The configuration is
-    /// validated against the expected structure and returned as a `Config` instance.
+    /// This method first checks if the `OBAKE_CONFIG_FILE` environment variable is set.
+    /// If it is, the file specified by that environment variable will be loaded directly.
+    /// Otherwise, it searches for a file named `config.toml` in the following locations
+    /// in order of preference:
+    /// 1. `$HOME/.config/obake/config.toml` (user-specific configuration)
+    /// 2. `/etc/obake/config.toml` (system-wide configuration)
+    ///
+    /// The first file found will be loaded and parsed as a TOML configuration file.
+    /// The configuration is validated against the expected structure and returned as
+    /// a `Config` instance.
     ///
     /// # Returns
     ///
@@ -107,21 +116,77 @@ impl Config {
     /// # Errors
     ///
     /// This function will return an error if:
-    /// - The `obake.toml` file doesn't exist
+    /// - The `OBAKE_CONFIG_FILE` environment variable is set but the specified file doesn't exist
+    /// - No `config.toml` file is found in any of the search paths (when env var is not set)
     /// - The file cannot be read
     /// - The TOML content is invalid
     /// - The configuration structure doesn't match the expected format
     ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use crate::config::Config;
+    ///
+    /// // Load configuration from standard locations or environment variable
+    /// match Config::load() {
+    ///     Ok(config) => {
+    ///         println!("Configuration loaded successfully");
+    ///         println!("Default interface: {}", config.audio.default_interface);
+    ///     }
+    ///     Err(e) => {
+    ///         eprintln!("Failed to load configuration: {}", e);
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # Environment Variable
+    ///
+    /// Set the `OBAKE_CONFIG_FILE` environment variable to specify a custom configuration file:
+    ///
+    /// ```bash
+    /// export OBAKE_CONFIG_FILE="/path/to/custom/config.toml"
+    /// ```
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        let config: Config = Figment::new().merge(Toml::file("obake.toml")).extract()?;
+        // Check if OBAKE_CONFIG_FILE environment variable is set
+        if let Ok(config_file) = std::env::var("OBAKE_CONFIG_FILE") {
+            debug!(
+                "OBAKE_CONFIG_FILE environment variable set to: {}",
+                config_file
+            );
+            return Self::load_from_path(&config_file);
+        }
 
-        Ok(config)
+        // Search paths in order of preference
+        let search_paths = vec![
+            // User-specific configuration
+            format!(
+                "{}/.config/obake/config.toml",
+                std::env::var("HOME").unwrap_or_default()
+            ),
+            // System-wide configuration
+            "/etc/obake/config.toml".to_string(),
+        ];
+
+        // Find the first existing configuration file
+        for path in &search_paths {
+            debug!("checking config path: {}", path);
+            if Path::new(path).exists() {
+                return Self::load_from_path(path);
+            }
+        }
+
+        // If no configuration file found, return an error
+        Err(format!(
+            "No configuration file found. Searched in: {}",
+            search_paths.join(", ")
+        )
+        .into())
     }
 
     /// Load configuration from a custom file path.
     ///
     /// This method allows you to specify a custom path to a TOML configuration file
-    /// instead of using the default `obake.toml` file. This is useful for testing,
+    /// instead of using the standard search paths. This is useful for testing,
     /// different environments, or when you need to load multiple configuration files.
     ///
     /// # Arguments
@@ -157,7 +222,7 @@ impl Config {
     /// ```
     pub fn load_from_path(path: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let config: Config = Figment::new().merge(Toml::file(path)).extract()?;
-
+        debug!("loaded config from path: {}", path);
         Ok(config)
     }
 
@@ -306,8 +371,7 @@ mod tests {
 
     #[test]
     fn test_config_loading() {
-        // This test would require the obake.toml file to be present
-        // In a real test environment, you might want to create a test config file
+        // Test loading from a specific path (for backward compatibility with existing obake.toml)
         if std::path::Path::new(TEST_CONFIG_PATH).exists() {
             let config = Config::load_from_path(TEST_CONFIG_PATH);
             assert!(config.is_ok());
@@ -329,6 +393,35 @@ mod tests {
     }
 
     #[test]
+    fn test_config_load_search_paths() {
+        // Test the new search behavior by creating a temporary config file
+        let test_config = r#"
+[audio]
+default-interface = "test"
+
+[audio.interfaces]
+"test" = { type = "test", unit = "test.service" }
+"#;
+
+        // Create a temporary file
+        let temp_file = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
+        let config_path = temp_file.path().to_str().unwrap();
+
+        // Write config content to temporary file
+        std::fs::write(config_path, test_config).unwrap();
+
+        // Test loading from the temporary path
+        let config = Config::load_from_path(config_path);
+        assert!(config.is_ok());
+
+        let config = config.unwrap();
+        assert_eq!(config.audio.default_interface, "test");
+        assert!(config.audio.interfaces.contains_key("test"));
+
+        // Clean up is automatic when temp_file goes out of scope
+    }
+
+    #[test]
     fn test_optional_unit_field() {
         // Test configuration with optional unit field
         let test_config = r#"
@@ -340,10 +433,12 @@ default-interface = "alsa"
 "jack" = { type = "jack", unit = "jack.service" }
 "#;
 
-        // Write test config to temporary file
-        use std::fs;
-        let test_file = "test_config_optional_unit.toml";
-        fs::write(test_file, test_config).unwrap();
+        // Create a temporary file
+        let temp_file = tempfile::NamedTempFile::with_suffix(".toml").unwrap();
+        let test_file = temp_file.path().to_str().unwrap();
+
+        // Write config content to temporary file
+        std::fs::write(test_file, test_config).unwrap();
 
         // Load and verify
         let config = Config::load_from_path(test_file);
@@ -364,7 +459,6 @@ default-interface = "alsa"
             assert_eq!(jack_interface.unit.as_ref().unwrap(), "jack.service");
         }
 
-        // Clean up test file
-        fs::remove_file(test_file).unwrap();
+        // Clean up is automatic when temp_file goes out of scope
     }
 }

@@ -1,0 +1,8 @@
+[audio]
+default-interface = "mixpre"
+
+[audio.interfaces]
+"aes67" = { type = "jack", unit = "jack@aes67.service" }
+"mixpre" = { type = "jack", unit = "jack@mixpre.service" }
+"usbpre" = { type = "jack", unit = "jack@usbpre.service" }
+"adat" = { type = "jack", unit = "jack@adat.service" }

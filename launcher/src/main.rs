@@ -4,6 +4,8 @@ use log::{LevelFilter, info, trace};
 
 use systemd_zbus::{ManagerProxy, Mode, zbus::Connection};
 
+mod config;
+
 // Include the version generated at build time
 include!(concat!(env!("OUT_DIR"), "/version.rs"));
 

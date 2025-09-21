@@ -1,0 +1,9 @@
+[setup]
+interface = "mixpre"
+shapes = ["serialosc", "siren"]
+
+[shapes.serialosc]
+image = "serialosc.sif"
+
+[shapes.serialosc.env]
+SINGULARITY_BIND = "/run/udev:/run/udev"

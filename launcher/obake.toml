@@ -6,3 +6,6 @@ default-interface = "mixpre"
 "mixpre" = { type = "jack", unit = "jack@mixpre.service" }
 "usbpre" = { type = "jack", unit = "jack@usbpre.service" }
 "adat" = { type = "jack", unit = "jack@adat.service" }
+
+[data]
+user-data-dir = "/home/obake/data"

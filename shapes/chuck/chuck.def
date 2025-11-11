@@ -6,7 +6,7 @@ Stage: build
 	export LC_ALL=C
 
 %post
-        export PIN_CHUCK=1.5.5.0
+    export PIN_CHUCK={{ chuck_version }}
 
 	export DEBIAN_FRONTEND=noninteractive
 	export PKG_CONFIG_PATH=/usr/local/lib/pkgconfig
@@ -39,7 +39,7 @@ Stage: final
 
 %files from build
 	/usr/local/* /usr/local/
-	
+
 %post
 	apt-get update
 	apt-get install -y -q \
@@ -48,6 +48,11 @@ Stage: final
 		libjack-jackd2-0
 	rm -rf /var/lib/apt/lists/*
 
-	
+
 %runscript
 	/usr/local/bin/chuck $*
+
+%labels
+    com.afofo.obake.shape-schema 0.1
+    com.afofo.obake.shape-name chuck
+    com.afofo.obake.shape-app-version {{ chuck_version }}

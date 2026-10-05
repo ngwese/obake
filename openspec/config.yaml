@@ -1,0 +1,64 @@
+schema: spec-driven
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+context: |
+  obake is a headless Linux server for running user-defined audio effects and
+  synthesis processes, in addition to sequencers, MIDI processors, and
+  generative control systems for MIDI and OSC.
+
+  Core capabilities:
+  - Fully headless operation (no GUI; driven via MIDI/OSC and configuration).
+  - Persistent configurations across boot cycles.
+  - OTA upgrades of the base system.
+  - Portability of configurations between hosts via Singularity containerized
+    workloads.
+
+  Repository layout:
+  - shapes/<name>/<name>.def: Singularity definition files that build each
+    containerized workload. Existing shapes: siren (SBCL/Common Lisp musical
+    control environment), chuck (ChucK), mod-host (LV2 host), rnbo-runner
+    (RNBO OSCQuery runner), serialosc (Monome serialosc).
+  - host/: host-level configuration installed onto the target system, not
+    baked into shapes. Contains udev rules (host/udev/*.rules) and JACK
+    configuration (host/jack/*.conf, host/jack/jack@.service).
+  - demo/: example material.
+
+  Shape image conventions:
+  - Multi-stage Singularity builds (build -> final) based on debian:bookworm.
+  - Images carry com.afofo.obake.shape-schema, com.afofo.obake.shape-name, and
+    com.afofo.obake.shape-app-version labels.
+  - Shape app versions are pinned/templated (e.g. {{ chuck_version }}) and
+    bumped as part of changes.
+  - Pinned source tarballs (shapes/*/*.tgz) are tracked with git-lfs.
+
+  Tech stack: Singularity/Apptainer definition files, Debian, systemd, JACK,
+  ChucK, SBCL/Common Lisp, C++/CMake (RNBO), git-lfs.
+
+  Commit conventions: Conventional Commits, with a maximum commit message line
+  length of 80 characters.
+
+# Per-artifact rules (optional)
+rules:
+  proposal:
+    - Focus on externally observable behavior of the headless server and its
+      shapes.
+    - Call out any impact on persistent configuration, OTA upgrades, or
+      cross-host portability when relevant.
+  tasks:
+    - Name the affected shape(s) or host/ files explicitly.
+    - Include a step to bump pinned shape/app versions when a dependency
+      changes.
+    - Include a verification step that can be run headlessly.
+
+# Per-operation guidance (optional)
+operations:
+  apply:
+    guidance:
+      - Use Conventional Commits and keep every commit message line to 80
+        characters or fewer.
+  archive:
+    guidance:
+      - Use Conventional Commits and keep every commit message line to 80
+        characters or fewer.

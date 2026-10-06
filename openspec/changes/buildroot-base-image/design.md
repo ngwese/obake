@@ -123,6 +123,16 @@ D-Bus interface (`org.jackaudio`).
   runtime and bindings for a convenience CLI nothing on the host uses, and then
   deletes that CLI anyway in the dbus-only case).
 
+`jackdbus` is D-Bus activated, so the runtime also ships a session bus for the
+`obake` user: the standard systemd user `dbus.socket`/`dbus.service` units
+(Buildroot does not package them), enabled on the user manager, with the user
+manager started at boot by `obake-linger.service` (enable-linger plus an
+explicit `user@<uid>.service` start). `org.jackaudio.service` is then
+activatable on `unix:path=/run/user/<uid>/bus`. The to-be-written
+`obake-launcher` will use this bus to activate and configure `jackd` over
+D-Bus. Because `/var` becomes tmpfs with a persisted subset later, the linger
+state (`/var/lib/systemd/linger`) must live on that persisted subset.
+
 ### Init and base userland: systemd, minimal set
 
 Keep `BR2_INIT_SYSTEMD`. The host contract is systemd-shaped: `obake-runtime.target`,

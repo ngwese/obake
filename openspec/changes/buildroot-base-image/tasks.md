@@ -62,6 +62,11 @@ shape/app versions are bumped. The affected host material is `image/os`,
   the booted image provides `jackdbus` with no `python3` or `jack_control`
   present, and that `jackdbus` acquires the `org.jackaudio.service` name on a
   D-Bus bus (jack2 ships it as a session-bus activation file).
+- [x] 4.5 Provide the session D-Bus the runtime uses: ship the standard systemd
+  user `dbus.socket`/`dbus.service` units, enable the socket for the `obake`
+  user, and start that user manager at boot (`obake-linger.service`); verify
+  `/run/user/<uid>/bus` exists after boot and that `jackdbus` is activatable as
+  `org.jackaudio.service` on it.
 
 ## 5. Singularity CE runtime
 

@@ -6,25 +6,25 @@ shape/app versions are bumped. The affected host material is `image/os`,
 
 ## 1. Buildroot base and cross toolchain
 
-- [ ] 1.1 Create the `BR2_EXTERNAL` tree under `image/os/` (`external.desc`,
+- [x] 1.1 Create the `BR2_EXTERNAL` tree under `image/os/` (`external.desc`,
   `Config.in`, `configs/`) and pin the Buildroot release; verify `make` with the
   base defconfig produces a minimal rootfs.
-- [ ] 1.2 Build the base rootfs for x86_64 and aarch64 from the same source;
+- [x] 1.2 Build the base rootfs for x86_64 and aarch64 from the same source;
   verify both boot to a running state under QEMU.
-- [ ] 1.3 Vendor the Buildroot `DL_DIR` for the pinned release and build with
+- [x] 1.3 Vendor the Buildroot `DL_DIR` for the pinned release and build with
   networking disabled; verify the build succeeds offline.
-- [ ] 1.4 Document the Buildroot layout, pins, and build command in
+- [x] 1.4 Document the Buildroot layout, pins, and build command in
   `image/os/README.md`; verify the documented command rebuilds the base rootfs.
 
 ## 2. Custom realtime kernel
 
-- [ ] 2.1 Configure the `linux` package pinned to 7.2.9 with its source hash and
+- [x] 2.1 Configure the `linux` package pinned to 7.2.9 with its source hash and
   a realtime config fragment; verify the built kernel enables
   `CONFIG_PREEMPT_RT` and boots.
-- [ ] 2.2 Write the kernel version into the image and tie it to the image
+- [x] 2.2 Write the kernel version into the image and tie it to the image
   version; verify the booted image reports the pinned realtime kernel and image
   version.
-- [ ] 2.3 Make the build fail when the realtime configuration is absent; verify
+- [x] 2.3 Make the build fail when the realtime configuration is absent; verify
   a deliberate `BREAK`-style removal fails the build.
 
 ## 3. Minimal systemd base userland and host configuration

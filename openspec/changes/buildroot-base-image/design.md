@@ -26,6 +26,8 @@ harnesses.
 - A custom realtime kernel built from source as an ordinary build output.
 - Cross-compilation with no target-architecture execution, so any Linux host
   (native arm64 container on macOS) builds any target.
+- The shapes runtime as a distinct, reusable meta-package layer above the
+  minimal base.
 - Build and verification coupled only by an artifact set.
 - Retain the per-slot UKI + RAUC A/B model byte-for-byte where it already works.
 
@@ -37,6 +39,8 @@ harnesses.
   see Decisions).
 - Supporting a runtime package manager or in-place userland upgrades outside
   the A/B image update.
+- Implementing the future developer-tooling or audio-over-IP meta-packages;
+  this change establishes the runtime layer and the meta-package pattern only.
 
 ## Decisions
 
@@ -57,34 +61,56 @@ the drift problem at its source rather than by pinning a mirror.
 - Alternative: exact `pkg=version` pins on `deb.debian.org` (rejected:
   transitive dependencies still drift and the list needs constant upkeep).
 
-### Layer model expressed as BR2_EXTERNAL + defconfigs
+### Layer model: minimal base + runtime layer + board
 
-The old L1..L5 layers become Buildroot idioms:
+The old L1..L5 layers map to Buildroot idioms, with the shapes runtime
+expressed as a named meta-package so it is one explicit layer above the minimal
+base:
 
 ```
-  old layer            Buildroot expression
-  ---------            ------------------------------------------------
-  base (trixie)        pinned Buildroot release + base defconfig
-  kernel               linux package: version, hash, config fragment
-  tuning               BR2_EXTERNAL package(s) + rootfs overlay
-  runtime              BR2_EXTERNAL package: singularity
-  board                board defconfig + BR2_EXTERNAL board directory
+  old layer     Buildroot expression
+  ---------     --------------------------------------------------------
+  base          pinned Buildroot release + base defconfig + rootfs overlay
+  kernel        linux package: version, hash, realtime config fragment
+  runtime       BR2_EXTERNAL meta-package `obake-runtime` (+ singularity)
+  board         board defconfig + BR2_EXTERNAL board directory
 ```
 
-This is a real trade-off: Buildroot captures a whole selection in one defconfig
-and `BR2_EXTERNAL` is a single external tree, so layers are no longer
-independently swappable the way `layers/*/apply.sh` allowed. Bumping the
-Buildroot release can require recipe fixes. Accepted because the goal is a
-stable shared base, not per-layer rebasing.
+The **minimal base** is systemd, the admin tool set, and the host
+configuration (users, udev, JACK profiles, polkit). The **runtime layer** is the
+set the shapes build and run on: the audio and networking runtime plus the
+Singularity container runtime. It is a single `BR2_EXTERNAL` meta-package whose
+`Config.in` `select`s each member package, so a defconfig names the layer once
+and future board defconfigs reuse it.
 
-### Init and userland: systemd, minimal set
+`obake-runtime` selects, at present: `jack2` (jackd), `alsa-utils`,
+`usb-modeswitch`, `nftables`, `avahi` (+ daemon), `nss-mdns`, `libcurl` (+ the
+`curl` binary), `iproute2`, `sudo`, and `git`, plus the Singularity package once
+section 5 provides it. `jack2` needs `BR2_INSTALL_LIBSTDCPP`, enabled in the
+base.
+
+`rtkit` is intentionally not included: Buildroot has no `rtkit` package, and
+realtime scheduling and locked memory are already provided by the `limits.d`
+grants and the PREEMPT_RT kernel.
+
+Additional meta-packages are expected in future changes — developer tooling,
+and audio-over-IP kernel modules plus userspace tooling. This change establishes
+the runtime layer and the meta-package pattern and does not implement those.
+
+Trade-off: Buildroot captures a whole selection in one defconfig and
+`BR2_EXTERNAL` is a single external tree, so layers are not independently
+swappable the way `layers/*/apply.sh` allowed. Bumping the Buildroot release can
+require recipe fixes. Accepted because the goal is a stable shared base, not
+per-layer rebasing.
+
+### Init and base userland: systemd, minimal set
 
 Keep `BR2_INIT_SYSTEMD`. The host contract is systemd-shaped: `obake-runtime.target`,
 `systemd-sysusers`/`sysusers.d`, `tmpfiles.d`, polkit rules, RAUC's D-Bus
-service, and the health-gate units. The former tuning-layer packages fold into
-this base userland. The guaranteed tool set is `bash`, `grep`, `git`, `vi`,
-`sudo`, `ip`, `systemctl`, `journalctl`, `dmesg`, `singularity`, plus the
-network/SSH pieces the contract already implies (`openssh`, `curl`, `avahi`).
+service, and the health-gate units. The minimal base userland provides `bash`,
+`grep`, `vi`, `sudo`, `systemctl`, `journalctl`, `dmesg`, `openssh`, and polkit.
+The runtime packages the shapes build on — including `jack2` and the container
+runtime — are a separate layer above this base (see the layer model above).
 
 - Alternative: BusyBox init (rejected: would require rewriting the tuning
   layer, RAUC D-Bus integration, and the privilege model for negligible size

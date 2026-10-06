@@ -211,14 +211,15 @@ actually governs the resource rather than a blanket `sudo` or a broad group:
 
 ### Build/repo layout
 
-New top-level material, kept out of `shapes/`:
+New top-level material, kept out of `shapes/`, under `image/`:
 
-- `os/` (working name): image build definitions, layer packages, partition
-  metadata, signing.
-- `installer/` (working name): installer image and partitioning logic.
-- `verification/` (working name): containerized build environment and the QEMU
+- `image/os`: image build definitions, layer packages, partition metadata,
+  signing.
+- `image/installer`: installer image and partitioning logic.
+- `image/verification`: containerized build environment and the QEMU
   verification harness.
-- `host/` udev and JACK configuration move into the tuning layer.
+- `image/host`: udev and JACK configuration consumed by the tuning layer.
+- `image/docs`: host configuration and update documentation.
 
 Exact paths are settled during implementation.
 
@@ -258,7 +259,7 @@ Greenfield: no existing hosts are migrated.
    (x86_64); validate arm64 on hardware.
 3. Integrate RAUC, signing, USB/HTTPS delivery, and native slot activation.
 4. Add the health gate and validate a forced-failure revert.
-5. Only then treat the build as the supported provisioning path; `host/` manual
+5. Only then treat the build as the supported provisioning path; `image/host/` manual
    setup is retired into the tuning layer.
 
 Rollback of the change itself is simply not adopting the new build; no running

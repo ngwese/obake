@@ -20,9 +20,12 @@ context: |
     containerized workload. Existing shapes: siren (SBCL/Common Lisp musical
     control environment), chuck (ChucK), mod-host (LV2 host), rnbo-runner
     (RNBO OSCQuery runner), serialosc (Monome serialosc).
-  - host/: host-level configuration installed onto the target system, not
-    baked into shapes. Contains udev rules (host/udev/*.rules) and JACK
-    configuration (host/jack/*.conf, host/jack/jack@.service).
+  - image/: the host OS image subsystem, kept out of shapes/. Contains the
+    layered image build (image/os), installer (image/installer), containerized
+    build environment and QEMU verification (image/verification), and
+    host-level configuration installed onto the target system,
+    image/host/ (udev rules image/host/udev/*.rules and JACK configuration
+    image/host/jack/*.conf, image/host/jack/jack@.service).
   - demo/: example material.
 
   Shape image conventions:
@@ -47,7 +50,7 @@ rules:
     - Call out any impact on persistent configuration, OTA upgrades, or
       cross-host portability when relevant.
   tasks:
-    - Name the affected shape(s) or host/ files explicitly.
+    - Name the affected shape(s) or image/host/ files explicitly.
     - Include a step to bump pinned shape/app versions when a dependency
       changes.
     - Include a verification step that can be run headlessly.

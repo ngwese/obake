@@ -1,7 +1,7 @@
 # Tasks
 
 Shapes are out of scope for this change; no `shapes/*` files are touched. The
-`host/` udev rules and JACK configuration are consumed by the tuning layer.
+`image/host/` udev rules and JACK configuration are consumed by the tuning layer.
 
 ## 1. Build environment and image pipeline
 
@@ -27,8 +27,8 @@ Shapes are out of scope for this change; no `shapes/*` files are touched. The
 - [x] 1.5 Include a pinned realtime kernel (stock Debian PREEMPT_RT package for
   now; a fully custom kernel build is deferred to 9.1); verify the image boots
   under qemu and reports the pinned realtime kernel version.
-- [x] 1.6 Move `host/udev/*.rules` and `host/jack/*.conf` plus
-  `host/jack/jack@.service` into the tuning layer package; verify the built
+- [x] 1.6 Move `image/host/udev/*.rules` and `image/host/jack/*.conf` plus
+  `image/host/jack/jack@.service` into the tuning layer package; verify the built
   image places them under `/etc/udev/rules.d` and `/etc/jack`.
 - [x] 1.7 Add per-board tuning metapackages; verify two board images derive from
   one shared base and differ only in the tuning layer.
@@ -39,7 +39,7 @@ Shapes are out of scope for this change; no `shapes/*` files are touched. The
   encodes its slot and embeds the expected cmdline.
 - [x] 1.10 Emit a versioned image artifact and a signature; verify the signature
   validates for a good artifact and fails for a tampered one.
-- [x] 1.11 Document the layer model and build commands in `os/README.md`; verify
+- [x] 1.11 Document the layer model and build commands in `image/os/README.md`; verify
   the documented commands rebuild an image as written.
 
 ## 2. Partition layout and installer
@@ -63,7 +63,7 @@ Shapes are out of scope for this change; no `shapes/*` files are touched. The
   verify it produces a bootable host.
 - [ ] 2.7b Run the installer end to end on arm64 hardware; verify it produces a
   bootable host.
-- [x] 2.8 Document installer usage and the stable layout in `installer/README.md`;
+- [x] 2.8 Document installer usage and the stable layout in `image/installer/README.md`;
   verify the documented flow matches an actual install.
 
 ## 3. Read-only root and writable contract
@@ -80,7 +80,7 @@ Shapes are out of scope for this change; no `shapes/*` files are touched. The
 - [x] 3.5 Define the directory contract and SSH access; verify a user can modify
   files within the contract and cannot modify the root outside it.
 - [x] 3.6 Document the writable contract and directory layout in
-  `docs/host-config.md`; verify the documented paths match the running system.
+  `image/docs/host-config.md`; verify the documented paths match the running system.
 - [x] 3.7 Grant `obake` systemd/power control and diagnostic read access, then
   verify `systemctl` and `poweroff` work and that `dmesg` and the full
   `journalctl` journal are readable as `obake`.
@@ -106,7 +106,7 @@ Shapes are out of scope for this change; no `shapes/*` files are touched. The
   and verify the new version is reported after installing the resulting bundle.
   Requires a second runtime build.
 - [x] 4.8 Document the update procedure and signing workflow in
-  `docs/os-update.md`; verify the documented commands perform an update.
+  `image/docs/os-update.md`; verify the documented commands perform an update.
 - [x] 4.9 Add a manual `rollback` option to the update client that reverts to
   the previous slot and restores the prior configuration; verify it activates
   the other slot.
@@ -124,7 +124,7 @@ Shapes are out of scope for this change; no `shapes/*` files are touched. The
 - [x] 5.4 Make the number of validation boots configurable; verify the
   configured value is honored.
 - [x] 5.5 Document the health-gate criteria and rollback behavior in
-  `docs/os-update.md`; verify the described behavior matches a forced-failure
+  `image/docs/os-update.md`; verify the described behavior matches a forced-failure
   run.
 
 ## 7. QEMU verification harness
@@ -147,7 +147,7 @@ Shapes are out of scope for this change; no `shapes/*` files are touched. The
 - [x] 7.4b Verify the harness runs without a display and reports a deterministic
   pass or fail on Windows 11 WSL x86_64.
 - [x] 7.5 Document how to run the build environment and QEMU harness in
-  `verification/README.md`; verify the documented commands reproduce a passing
+  `image/verification/README.md`; verify the documented commands reproduce a passing
   run.
 
 ## 8. Integration verification

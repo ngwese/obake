@@ -10,7 +10,11 @@ and portability of configurations between hosts via Singularity containerized
 workloads ("shapes").
 
 - `shapes/<name>/<name>.def` — Singularity definition files for each workload.
-- `host/` — host-level udev rules and JACK/systemd configuration.
+- `image/` — the host OS image subsystem: layered image build (`image/os`),
+  headless installer (`image/installer`), containerized build environment and
+  QEMU verification (`image/verification`), host-level udev/JACK configuration
+  (`image/host`), and documentation (`image/docs`). Its scripts and docs resolve
+  paths relative to `image/`, so run build and verification commands from there.
 
 ## Spec-driven workflow (OpenSpec)
 

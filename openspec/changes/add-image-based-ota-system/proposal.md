@@ -62,7 +62,7 @@ persistent configuration and reliable OTA upgrades.
   affected.
 - x86_64 is the primary target and the focus of QEMU verification; arm64 remains
   a supported target built from the same layers.
-- `host/` udev rules and JACK configuration become part of the tuned image
+- `image/host/` udev rules and JACK configuration become part of the tuned image
   layer rather than manual per-host installation.
 - Persistent configuration and cross-host portability now depend on the persist
   and user partition contract; shapes remain independent and out of scope.

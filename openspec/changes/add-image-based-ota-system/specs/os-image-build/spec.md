@@ -59,7 +59,7 @@ initial ramdisk, and kernel command line for the slot the image targets.
 
 - **WHEN** an image is built for a given slot
 - **THEN** the emitted UKI embeds the kernel and command line for that slot and
-  is named so the boot manager can associate it with that slot
+  is named so the boot entry can associate it with that slot
 
 ### Requirement: Versioned signed artifacts
 
@@ -72,13 +72,13 @@ the update system can verify before installing them.
 - **THEN** it produces a versioned image artifact and a signature over it that
   the update system can validate
 
-### Requirement: Apptainer runtime built from source
+### Requirement: Singularity CE runtime built from source
 
-The image SHALL include an Apptainer runtime built from source at a pinned
-version, because distribution-provided packages are too old.
+The image SHALL include a Singularity CE runtime built from source at a pinned
+version, because distribution-provided packages are too old or absent.
 
-#### Scenario: Pinned Apptainer present
+#### Scenario: Pinned Singularity CE present
 
 - **WHEN** an image is built
-- **THEN** the runtime layer provides the pinned Apptainer version built from
-  source rather than a distribution package
+- **THEN** the runtime layer provides the pinned Singularity CE version built
+  from source rather than a distribution package

@@ -52,13 +52,14 @@ architectures.
 
 ### Requirement: A/B boot installation
 
-The installer SHALL install a boot manager and a unified kernel image for each
-slot, and the installed host SHALL boot the active slot by default.
+The installer SHALL install a unified kernel image for each slot and create a
+firmware boot entry for each, and the installed host SHALL boot the active slot
+by default.
 
 #### Scenario: First boot uses active slot
 
 - **WHEN** installation completes and the host powers on
-- **THEN** the boot manager loads the active slot's unified kernel image and the
+- **THEN** the firmware loads the active slot's unified kernel image and the
   corresponding root slot
 
 ### Requirement: Machine-specific seeding

@@ -49,8 +49,7 @@ firmware and SHALL confirm the system reaches a running state.
 #### Scenario: Built image boots under UEFI
 
 - **WHEN** a built image is booted under QEMU with UEFI firmware
-- **THEN** the boot manager loads the active slot and the system reaches a
-  running state
+- **THEN** the system boots the active slot and reaches a running state
 
 ### Requirement: QEMU installer verification
 

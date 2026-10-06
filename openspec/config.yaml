@@ -33,7 +33,7 @@ context: |
     bumped as part of changes.
   - Pinned source tarballs (shapes/*/*.tgz) are tracked with git-lfs.
 
-  Tech stack: Singularity/Apptainer definition files, Debian, systemd, JACK,
+  Tech stack: Singularity CE definition files, Debian, systemd, JACK,
   ChucK, SBCL/Common Lisp, C++/CMake (RNBO), git-lfs.
 
   Commit conventions: Conventional Commits, with a maximum commit message line

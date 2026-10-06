@@ -11,7 +11,7 @@ persistent configuration and reliable OTA upgrades.
 ## What Changes
 
 - Introduce a layered, reproducible OS image build on a minimal Debian base,
-  with a custom realtime-tuned kernel and an Apptainer runtime built from
+  with a custom realtime-tuned kernel and a Singularity CE runtime built from
   source. Rebasing on a newer base becomes a mechanical rebuild.
 - Introduce a headless, serial/text-console installer that partitions a target
   disk with stable partition labels/GUIDs and installs an A/B slot pair.
@@ -23,8 +23,8 @@ persistent configuration and reliable OTA upgrades.
   and persisted `/var` subset on a shared persist partition, and a separate
   user partition untouched by updates and restores.
 - Introduce a health-gate service that snapshots and restores user
-  configuration, validates an update over a bounded number of boots, and lets
-  boot counting auto-revert to the previous slot on failure.
+  configuration, validates an update over a bounded number of boots, and
+  automatically reverts to the previous slot on failure.
 - Introduce a reproducible, containerized build environment that runs on the
   project's development hosts (macOS arm64 and Windows 11 WSL x86_64) and a
   headless QEMU verification harness that installs, boots, and exercises the
@@ -36,12 +36,13 @@ persistent configuration and reliable OTA upgrades.
 
 - `os-image-build`: layered minimal-Debian image build producing versioned,
   signed artifacts (rootfs, custom realtime kernel, per-slot UKI) with board
-  tuning and an Apptainer-from-source runtime.
+  tuning and a Singularity-CE-from-source runtime.
 - `system-install`: headless installer that selects a target disk, applies a
-  stable partition layout, installs the A/B slots and systemd-boot, and seeds
+  stable partition layout, installs the A/B slots and their UKIs, and seeds
   the persist and user partitions.
 - `os-update`: user-initiated RAUC A/B updates delivered by signed HTTPS or USB
-  sideload, with per-slot UKIs, boot-counting rollback, and a health gate.
+  sideload, with per-slot UKIs, native slot activation and rollback, and a
+  health gate.
 - `host-config`: read-only root with an `/etc` overlay, tmpfs `/var` plus a
   persisted subset, a user partition untouched by updates/restores, and a
   directory-contract customization surface.

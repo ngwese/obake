@@ -11,11 +11,11 @@ Constraints that shape the approach:
 
 - Targets are x86_64 (primary) and arm64 (secondary). arm64 boards (e.g.
   FriendlyElec RK35xx) boot via U-Boot; U-Boot's EFI payload is assumed so both
-  architectures present UEFI to a common boot manager.
+  architectures present UEFI to a common boot model.
 - Development/build hosts are macOS arm64 and Windows 11 WSL on x86_64, so the
   build and verification must be host-agnostic.
-- The base must run Apptainer, which the project already builds from source
-  because distribution packages are too old.
+- The base must run Singularity CE, which the project already builds from source
+  because distribution packages are too old or absent.
 - The minimal base is Debian trixie, whose systemd (257) provides `ukify`, the
   tool used to generate unified kernel images. bookworm's systemd 252 does not.
 - Hosts may be airgapped (AoIP-only) and updates are user-initiated.
@@ -47,11 +47,11 @@ Constraints that shape the approach:
 ### Update engine: RAUC over systemd-sysupdate
 
 RAUC is chosen because its bootloader backends cover both targets from one
-update model: `efi` (systemd-boot) on x86_64 and U-Boot (`bootchooser`) on
-arm64 if U-Boot's EFI payload is not usable. systemd-sysupdate is cleaner on
-x86_64 UEFI but is effectively systemd-boot-centric and has no first-class
-U-Boot rollback. RAUC also provides signed bundles, slot state, and a D-Bus
-API.
+update model: `efi` (EFI `BootOrder`/`BootNext`) on x86_64 and U-Boot
+(`bootchooser`) on arm64 if U-Boot's EFI payload is not usable.
+systemd-sysupdate is cleaner on x86_64 UEFI but is effectively
+systemd-boot-centric and has no first-class U-Boot rollback. RAUC also provides
+signed bundles, slot state, and a D-Bus API.
 
 - Alternative: systemd-sysupdate + systemd-boot (rejected: weak on U-Boot).
 - Alternative: custom fwupd plugin for OS images (rejected: reimplements RAUC).
@@ -64,40 +64,43 @@ single recovery path.
 
 - Alternative: A/B + recovery slot (rejected: space, third slot to maintain).
 
-### Boot manager and kernel placement: systemd-boot with per-slot UKIs
+### Boot manager and kernel placement: per-slot UKIs with RAUC activation
 
-systemd-boot can read only the ESP (FAT) or an XBOOTLDR partition, so the
-kernel cannot live in the ext4 root slot. Each slot therefore ships a unified
-kernel image (kernel + initrd + cmdline) on the ESP, named per slot. The UKI is
-version-locked to its root slot, so kernel and userspace roll back together.
+The kernel cannot live in the ext4 root slot when using a firmware/EFI boot
+path, so each slot ships a unified kernel image (kernel + initrd + cmdline) on
+the ESP, named per slot. The UKI is version-locked to its root slot, so kernel
+and userspace roll back together. Slot selection uses RAUC's native bootloader
+backends rather than systemd-boot: the `efi` backend manipulates EFI
+`BootOrder`/`BootNext` on x86_64, and the `uboot` backend manipulates
+`BOOT_ORDER` on arm64. Firmware boots the selected slot's UKI directly.
 
+- Alternative: systemd-boot BLS with filename boot counting (rejected: RAUC's
+  `efi` backend does not use it, so slot selection would not be driven by RAUC).
 - Alternative: shared kernel on the ESP (rejected: kernel not A/B).
 - Alternative: dedicated XBOOTLDR partition (deferred: more room only if UKIs
   grow).
 
-### systemd-boot updates via fwupd UEFI capsule
+### Slot activation and rollback via RAUC
 
-The boot manager binary lives in the shared ESP, outside A/B, so it is updated
-deliberately and independently of slots, via a fwupd UEFI capsule. This is
-non-standard and must be prototyped early.
+RAUC's bootloader backend activates the updated slot after installation
+(`BootNext`/`BootOrder` on `efi`, `BOOT_ORDER` on `uboot`), so the next boot
+uses the inactive slot that was just written. The health gate marks the slot
+good once the update proves healthy; if it does not within the configured number
+of boots, it marks the new slot bad and activates the previous slot, and the
+firmware boots the previous UKI. Slot state is stored on the persist partition
+so it survives slot switches.
 
-- Alternative: `bootctl update` from the slot (fallback if capsule build proves
-  impractical; risk is ESP writes outside A/B).
-
-### Boot counting for rollback
-
-systemd-boot's `+tries-left+good` filename convention drives rollback. The
-inactive slot's UKI is installed with a finite try count; the health gate marks
-it good, otherwise the count reaches zero and the boot manager falls back to the
-other slot. Boot counting is filesystem-based, so it survives limited U-Boot
-EFI-variable support.
+- Alternative: systemd-boot filename boot counting (rejected: not driven by
+  RAUC, and requires a separate activation path).
 
 ### Health gate
 
 A systemd service runs early on boot when an update is pending. It restores the
 prior user configuration (shapes list, JACK profile, and the like) from a
 pre-update snapshot on the persist partition, validates the running update over
-a bounded number of boots, and on success marks the slot good through RAUC.
+a bounded number of boots, and on success marks the slot good through RAUC. If
+the update is not marked good within the bound, the service marks the new slot
+bad and activates the previous slot so the firmware boots it.
 
 ### Update transport: USB preferred, signed HTTPS otherwise
 
@@ -123,8 +126,8 @@ layers are untouched.
   is strongest with systemd-sysupdate, which was not chosen; mmdebstrap is
   Debian-native and bootloader-neutral, and RAUC consumes a rootfs image and UKI
   directly).
-- Alternative: Buildroot (rejected: Apptainer runtime is not packaged and would
-  be heavy to support).
+- Alternative: Buildroot (rejected: the Singularity CE runtime is not packaged
+  and would be heavy to support).
 
 ### UKI generation: ukify on the trixie base
 
@@ -166,13 +169,13 @@ role.
 
 | Role    | Label          | Contents                          | Mount      |
 |---------|----------------|-----------------------------------|------------|
-| ESP     | `OBKA_ESP`     | systemd-boot, per-slot UKIs, BLS  | `/boot/efi`|
+| ESP     | `OBKA_ESP`     | per-slot UKIs                    | `/boot/efi`|
 | root A  | `OBKA_ROOT_A`  | read-only rootfs slot A           | `/`        |
 | root B  | `OBKA_ROOT_B`  | read-only rootfs slot B           | `/`        |
 | persist | `OBKA_PERSIST` | /etc overlay, persisted /var, seed| `/persist` |
 | user    | `OBKA_USER`    | user data, home                   | `/home`    |
 
-ext4 throughout, no encryption. ESP sized for the boot manager plus two UKIs
+ext4 throughout, no encryption. ESP sized for the two per-slot UKIs
 (start 1 GiB); root slots equal and fixed; persist modest and fixed; user takes
 the remainder.
 
@@ -202,22 +205,24 @@ Exact paths are settled during implementation.
 
 ## Risks / Trade-offs
 
-- [fwupd capsule for systemd-boot is non-standard] -> Prototype it first; keep
-  `bootctl update` as fallback; keep the boot manager version stable across
-  slots.
-- [U-Boot EFI variable support may be incomplete] -> Rely on filename-based boot
-  counting, which does not need EFI variables; validate on the arm64 board.
-- [ESP is shared outside A/B] -> Treat boot-manager updates as deliberate, not
-  per-slot; verify boot after any boot-manager change.
+- [U-Boot's environment storage varies across boards] -> Use RAUC's `uboot`
+  backend against the board's environment; validate on the arm64 board.
+- [Both per-slot UKIs share the ESP] -> The ESP carries only UKIs, not a shared
+  boot-manager binary; each update writes the inactive slot's UKI only.
+- [EFI variable support may be incomplete or non-atomic] -> Use RAUC's `efi`
+  backend, keep the previous slot bootable in `BootOrder`, and validate in QEMU;
+  do not rely on EFI variable writes being atomic.
 - [Shared persist across OS versions] -> Define state migrations; health gate
   restores a pre-update config snapshot on failure.
 - [Health gate false-good or false-bad] -> Keep criteria minimal and observable
-  (services up, audio path present) and make the try count configurable.
+  (services up, audio path present) and make the number of validation boots
+  configurable.
 - [No dm-verity / Secure Boot] -> Read-only root limits runtime tampering;
   revisit if the threat model changes.
 - [Power loss during slot write] -> Writes target the inactive slot; sync before
-  activation; boot counting provides the final safety net.
-- [Base rebase pulls incompatible kernel or Apptainer changes] -> Pin all inputs;
+  activation; RAUC's bootloader slot state provides the final safety net.
+- [Base rebase pulls incompatible kernel or Singularity CE changes] -> Pin all
+  inputs;
   rebuild and test in qemu per architecture before release.
 - [Cross-arch build emulation on macOS arm64] -> Pin the container image, treat
   WSL x86_64 as the reference build, and compare artifacts across hosts.
@@ -232,7 +237,7 @@ Greenfield: no existing hosts are migrated.
    environment, and produce a bootable x86_64 image.
 2. Build the installer and validate install and boot with the QEMU harness
    (x86_64); validate arm64 on hardware.
-3. Integrate RAUC, signing, USB/HTTPS delivery, and boot counting.
+3. Integrate RAUC, signing, USB/HTTPS delivery, and native slot activation.
 4. Add the health gate and validate a forced-failure revert.
 5. Only then treat the build as the supported provisioning path; `host/` manual
    setup is retired into the tuning layer.

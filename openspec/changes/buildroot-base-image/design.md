@@ -83,11 +83,11 @@ Singularity container runtime. It is a single `BR2_EXTERNAL` meta-package whose
 `Config.in` `select`s each member package, so a defconfig names the layer once
 and future board defconfigs reuse it.
 
-`obake-runtime` selects, at present: `jack2` (jackd), `alsa-utils`,
-`usb-modeswitch`, `nftables`, `avahi` (+ daemon), `nss-mdns`, `libcurl` (+ the
-`curl` binary), `iproute2`, `sudo`, and `git`, plus the Singularity package once
-section 5 provides it. `jack2` needs `BR2_INSTALL_LIBSTDCPP`, enabled in the
-base.
+`obake-runtime` selects, at present: `obake-jack2` (jackd + jackdbus),
+`alsa-utils`, `usb-modeswitch`, `nftables`, `avahi` (+ daemon), `nss-mdns`,
+`libcurl` (+ the `curl` binary), `iproute2`, `sudo`, and `git`, plus the
+Singularity package once section 5 provides it. `obake-jack2` needs
+`BR2_TOOLCHAIN_BUILDROOT_CXX`, enabled in the base.
 
 `rtkit` is intentionally not included: Buildroot has no `rtkit` package, and
 realtime scheduling and locked memory are already provided by the `limits.d`
@@ -103,14 +103,35 @@ swappable the way `layers/*/apply.sh` allowed. Bumping the Buildroot release can
 require recipe fixes. Accepted because the goal is a stable shared base, not
 per-layer rebasing.
 
+### JACK runtime: external jack2 recipe without Python
+
+`jackdbus` is C: `dbus/wscript` builds it from `jackdbus.c`, `controller*.c`,
+`params.c`, and the `xml*.c` files, and its configure step checks only `dbus-1`
+and `expat`. The Python dependency that Buildroot's in-tree
+`BR2_PACKAGE_JACK2_DBUS` drags in (`python3`, `dbus-python`,
+`python3-pyexpat`) exists solely for the `jack_control` helper, which the same
+`wscript` installs unconditionally as a `#! /usr/bin/python3` script.
+
+The runtime layer therefore uses an external recipe, `obake-jack2`
+(`package/obake-jack2/`), that configures `--alsa --classic --dbus`, depends on
+`alsa-lib`, `dbus`, and `expat`, installs both `jackd` and `jackdbus`, and
+removes `jack_control` after install. No Python interpreter or bindings are
+selected, so the host carries no Python runtime. `jackdbus` is driven over its
+D-Bus interface (`org.jackaudio`).
+
+- Alternative: the in-tree `BR2_PACKAGE_JACK2_DBUS` (rejected: selects a Python
+  runtime and bindings for a convenience CLI nothing on the host uses, and then
+  deletes that CLI anyway in the dbus-only case).
+
 ### Init and base userland: systemd, minimal set
 
 Keep `BR2_INIT_SYSTEMD`. The host contract is systemd-shaped: `obake-runtime.target`,
 `systemd-sysusers`/`sysusers.d`, `tmpfiles.d`, polkit rules, RAUC's D-Bus
 service, and the health-gate units. The minimal base userland provides `bash`,
 `grep`, `vi`, `sudo`, `systemctl`, `journalctl`, `dmesg`, `openssh`, and polkit.
-The runtime packages the shapes build on — including `jack2` and the container
-runtime — are a separate layer above this base (see the layer model above).
+The runtime packages the shapes build on — including `obake-jack2` and the
+container runtime — are a separate layer above this base (see the layer model
+above).
 
 - Alternative: BusyBox init (rejected: would require rewriting the tuning
   layer, RAUC D-Bus integration, and the privilege model for negligible size

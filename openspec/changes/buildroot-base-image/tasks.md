@@ -47,15 +47,21 @@ shape/app versions are bumped. The affected host material is `image/os`,
 ## 4. Runtime layer (shapes runtime)
 
 - [x] 4.1 Add a `BR2_EXTERNAL` meta-package `obake-runtime` whose `Config.in`
-  `select`s `jack2`, `alsa-utils`, `usb-modeswitch`, `nftables`, `avahi` (+
-  daemon), `nss-mdns`, `libcurl` (+ the `curl` binary), `iproute2`, `sudo`, and
-  `git`; enable `BR2_TOOLCHAIN_BUILDROOT_CXX` and select the layer in the base
-  defconfigs; verify the booted image provides `jackd` and `curl`.
+  `select`s `obake-jack2`, `alsa-utils`, `usb-modeswitch`, `nftables`, `avahi`
+  (+ daemon), `nss-mdns`, `libcurl` (+ the `curl` binary), `iproute2`, `sudo`,
+  and `git`; enable `BR2_TOOLCHAIN_BUILDROOT_CXX` and select the layer in the
+  base defconfigs; verify the booted image provides `jackd` and `curl`.
 - [x] 4.2 Verify the host JACK profiles and `jack@.service` from `image/host`
   run against the runtime `jack2`; verify the `/etc/jack` profiles are present
   and `jackd --version` works on the image.
 - [x] 4.3 Document the runtime layer, its membership, and the dropped `rtkit` in
   `image/os/README.md`; verify the documented set matches the image.
+- [x] 4.4 Add the external `obake-jack2` recipe (`--alsa --classic --dbus`) that
+  depends on `alsa-lib`/`dbus`/`expat`, installs `jackd` + `jackdbus`, removes
+  `jack_control`, and selects no Python; point `obake-runtime` at it and verify
+  the booted image provides `jackdbus` with no `python3` or `jack_control`
+  present, and that `jackdbus` acquires the `org.jackaudio.service` name on a
+  D-Bus bus (jack2 ships it as a session-bus activation file).
 
 ## 5. Singularity CE runtime
 

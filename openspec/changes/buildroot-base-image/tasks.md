@@ -11,8 +11,10 @@ shape/app versions are bumped. The affected host material is `image/os`,
   base defconfig produces a minimal rootfs.
 - [x] 1.2 Build the base rootfs for x86_64 and aarch64 from the same source;
   verify both boot to a running state under QEMU.
-- [x] 1.3 Vendor the Buildroot `DL_DIR` for the pinned release and build with
-  networking disabled; verify the build succeeds offline.
+- [x] 1.3 Vendor the pinned inputs (the Buildroot release tarball and the
+  complete `DL_DIR`, including the kernel tarball) under
+  `image/os/buildroot/vendor/` with git-lfs via `vendor.sh`; verify a build that
+  uses the vendor directory succeeds with networking disabled.
 - [x] 1.4 Document the Buildroot layout, pins, and build command in
   `image/os/README.md`; verify the documented command rebuilds the base rootfs.
 

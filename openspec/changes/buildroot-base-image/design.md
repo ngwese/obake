@@ -170,8 +170,22 @@ kernel, and runtime versions anywhere. Buildroot honors `SOURCE_DATE_EPOCH`,
 and the canonical rootfs archive is reproducible for a given host and pin. We
 do not require bit-identical output across different host architectures, and
 the `os-image-build` deltas state intent accordingly. To keep builds working
-airgapped and stable over time, Buildroot's `DL_DIR` (downloaded sources) is
-vendored per release rather than fetched live.
+airgapped and stable over time, the pinned inputs are vendored in the tree with
+git-lfs.
+
+### Pinned inputs vendored with git-lfs
+
+The pinned inputs for a release — the Buildroot release tarball and the
+complete Buildroot download cache (`DL_DIR`, which includes the pinned kernel
+tarball) — are committed under `image/os/buildroot/vendor/` and tracked with
+git-lfs, the same mechanism the repository already uses for shape tarballs.
+`build.sh` uses them directly when present, so a release builds with no network
+access, and `vendor.sh` repopulates them from a verified build when a pin
+changes.
+
+- Alternative: a separate release artifact store (rejected: adds infrastructure
+  the project does not otherwise run; git-lfs keeps inputs in the repository
+  with the pins that describe them).
 
 ## Risks / Trade-offs
 
@@ -222,4 +236,3 @@ Rollback is reverting the branch; the Debian build remains until step 7.
   the approach).
 - Whether the RK35xx defconfig uses mainline or vendor U-Boot and which DTB
   (settled when the board defconfig is written).
-- Where the vendored `DL_DIR` lives (git-lfs versus a release artifact store).

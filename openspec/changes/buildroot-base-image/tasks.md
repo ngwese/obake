@@ -18,9 +18,9 @@ shape/app versions are bumped. The affected host material is `image/os`,
 
 ## 2. Custom realtime kernel
 
-- [ ] 2.1 Configure the `linux` package pinned to the latest stable PREEMPT_RT
-  release (7.2.x, currently 7.2.9) with its source hash and a realtime config
-  fragment; verify the built kernel enables `CONFIG_PREEMPT_RT` and boots.
+- [ ] 2.1 Configure the `linux` package pinned to 7.2.9 with its source hash and
+  a realtime config fragment; verify the built kernel enables
+  `CONFIG_PREEMPT_RT` and boots.
 - [ ] 2.2 Write the kernel version into the image and tie it to the image
   version; verify the booted image reports the pinned realtime kernel and image
   version.

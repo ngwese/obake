@@ -93,7 +93,7 @@ network/SSH pieces the contract already implies (`openssh`, `curl`, `avahi`).
 ### Custom realtime kernel
 
 Kernel is the standard `linux` package pinned to the latest stable release that
-carries PREEMPT_RT (currently 7.2.9), plus a
+carries PREEMPT_RT (7.2.9), plus a
 `BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES` fragment enabling realtime
 (`CONFIG_PREEMPT_RT`, plus the latency/audio options the project wants). Because
 PREEMPT_RT has been mainline since 6.12, no out-of-tree RT patchset is needed

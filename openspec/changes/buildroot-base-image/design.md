@@ -92,12 +92,18 @@ network/SSH pieces the contract already implies (`openssh`, `curl`, `avahi`).
 
 ### Custom realtime kernel
 
-Kernel is the standard `linux` package with a pinned version and hash, plus a
+Kernel is the standard `linux` package pinned to the latest stable release that
+carries PREEMPT_RT (currently 7.2.9), plus a
 `BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES` fragment enabling realtime
-(`CONFIG_PREEMPT_RT`, plus the latency/audio options the project wants). Since
-PREEMPT_RT merged mainline in 6.12, a fragment is sufficient; this completes
-the task 9.1 work that was deferred. The kernel version is written to the image
-and reported, tied to the image version.
+(`CONFIG_PREEMPT_RT`, plus the latency/audio options the project wants). Because
+PREEMPT_RT has been mainline since 6.12, no out-of-tree RT patchset is needed
+and a fragment is sufficient; this completes the task 9.1 work that was
+deferred. The kernel version is written to the image and reported, tied to the
+image version.
+
+- Alternative: a longterm kernel (6.18.x or 6.12.x) for years of stable fixes
+  (deferred: the latest stable is preferred for current driver/hardware
+  support; switch to a longterm branch if long-lived fix support is required).
 
 ### Singularity CE as a native in-tree package
 
@@ -184,6 +190,9 @@ vendored per release rather than fetched live.
 - [arm64 QEMU `virt` + UEFI proxy diverges from RK35xx U-Boot] -> The proxy
   validates rootfs, RAUC, UKI, and the writable contract, not U-Boot/DTB;
   keep a hardware smoke test for the board's boot path.
+- [Buildroot release predates the chosen kernel version] -> use Buildroot's
+  custom kernel version + tarball/hash path rather than a known-version
+  shortcut, and verify the toolchain headers build against it.
 - [Live source downloads drift or are blocked] -> Vendor `DL_DIR` per release.
 - [systemd base is larger than a BusyBox base] -> Accepted; the contract and
   RAUC integration depend on it.
@@ -209,8 +218,8 @@ Rollback is reverting the branch; the Debian build remains until step 7.
 
 ## Open Questions
 
-- Exact Buildroot release and kernel version to pin (settled at
-  implementation; does not change the approach).
+- Exact Buildroot release to pin (settled at implementation; does not change
+  the approach).
 - Whether the RK35xx defconfig uses mainline or vendor U-Boot and which DTB
   (settled when the board defconfig is written).
 - Where the vendored `DL_DIR` lives (git-lfs versus a release artifact store).

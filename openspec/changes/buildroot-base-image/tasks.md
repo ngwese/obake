@@ -31,14 +31,18 @@ shape/app versions are bumped. The affected host material is `image/os`,
 
 ## 3. Minimal systemd base userland and host configuration
 
-- [ ] 3.1 Enable `BR2_INIT_SYSTEMD` and the guaranteed tool set in the base
+- [x] 3.1 Enable `BR2_INIT_SYSTEMD` and the guaranteed tool set in the base
   defconfig; verify the booted image provides `bash`, `grep`, `git`, `vi`,
   `sudo`, `ip`, `systemctl`, `journalctl`, and `dmesg`.
-- [ ] 3.2 Port `image/host/udev/*.rules` and `image/host/jack/*` plus the former
+- [x] 3.2 Port `image/host/udev/*.rules` and `image/host/jack/*` plus the former
   tuning-layer files into a `BR2_EXTERNAL` package or rootfs overlay; verify
   they land under `/etc/udev/rules.d` and `/etc/jack`.
-- [ ] 3.3 Port the obake user and privileged access (polkit rule,
+- [x] 3.3 Port the obake user and privileged access (polkit rule,
   `kernel.dmesg_restrict`, `systemd-journal`); verify `qemu/ssh-test.sh` passes.
+  The privilege behavior is verified directly (SSH key login, polkit
+  `systemctl`, `dmesg`, full journal, polkit `poweroff`); the `ssh-test.sh`
+  harness itself also asserts the writable contract and `obake-launcher`, so it
+  runs once sections 5 and 6 land.
 
 ## 4. Singularity CE runtime
 

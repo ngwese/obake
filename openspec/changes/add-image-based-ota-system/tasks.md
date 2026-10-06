@@ -78,6 +78,9 @@ Shapes are out of scope for this change; no `shapes/*` files are touched. The
   files within the contract and cannot modify the root outside it.
 - [x] 3.6 Document the writable contract and directory layout in
   `docs/host-config.md`; verify the documented paths match the running system.
+- [x] 3.7 Grant `obake` systemd/power control and diagnostic read access, then
+  verify `systemctl` and `poweroff` work and that `dmesg` and the full
+  `journalctl` journal are readable as `obake`.
 
 ## 4. RAUC A/B updates
 

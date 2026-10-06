@@ -85,3 +85,9 @@ update apply and revert.
 - **WHEN** the installed host has booted in QEMU
 - **THEN** the harness confirms the root is read-only, the writable contract
   behaves as specified, and an update applies and reverts as specified
+
+#### Scenario: Host user access checked
+
+- **WHEN** the installed host has booted in QEMU
+- **THEN** the harness confirms the host user can manage units and read the
+  kernel log and full system journal

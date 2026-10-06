@@ -190,6 +190,25 @@ the remainder.
 - A directory contract enumerates the writable locations; SSH users can modify
   only within it.
 
+### Host user and privileged access
+
+`obake` is a normal unprivileged login user and the root stays read-only. Three
+narrow grants make administration work over SSH, each using the mechanism that
+actually governs the resource rather than a blanket `sudo` or a broad group:
+
+- systemd unit and power control — a polkit rule
+  (`/etc/polkit-1/rules.d/49-obake.rules`). Over SSH a session is "remote", so
+  polkit's active-local-session rule does not otherwise apply.
+- kernel ring buffer — `kernel.dmesg_restrict = 0` in
+  `/etc/sysctl.d/90-obake.conf`. This is a sysctl gate, not polkit, and applies
+  system-wide.
+- full system journal — membership in `systemd-journal`, the group the journal
+  directory grants read access to. `journalctl` does not consult polkit.
+
+- Alternative: passwordless `sudo` or adding `obake` to `adm` wholesale
+  (rejected: broader than needed; these grants are scoped to the specific
+  actions, and the sysctl only affects the ring buffer).
+
 ### Build/repo layout
 
 New top-level material, kept out of `shapes/`:

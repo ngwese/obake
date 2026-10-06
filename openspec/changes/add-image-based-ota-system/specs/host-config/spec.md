@@ -97,3 +97,25 @@ only within those locations.
 - **WHEN** a user connected over SSH attempts to modify the read-only root
   outside the contract
 - **THEN** the modification fails
+
+### Requirement: Host user privileged access
+
+The `obake` login user SHALL be able to perform system maintenance over SSH
+without interactive authentication: managing systemd units and power state, and
+reading host diagnostics — the kernel log via `dmesg` and the full system
+journal via `journalctl`.
+
+#### Scenario: Unit and power management over SSH
+
+- **WHEN** the obake user runs `systemctl` unit or power operations over SSH
+- **THEN** the action succeeds without a password prompt
+
+#### Scenario: Kernel log readable
+
+- **WHEN** the obake user runs `dmesg`
+- **THEN** the kernel ring buffer is readable
+
+#### Scenario: Full system journal readable
+
+- **WHEN** the obake user reads the system journal with `journalctl`
+- **THEN** entries from all services and the whole boot are readable

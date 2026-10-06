@@ -44,8 +44,9 @@ persistent configuration and reliable OTA upgrades.
   sideload, with per-slot UKIs, native slot activation and rollback, and a
   health gate.
 - `host-config`: read-only root with an `/etc` overlay, tmpfs `/var` plus a
-  persisted subset, a user partition untouched by updates/restores, and a
-  directory-contract customization surface.
+  persisted subset, a user partition untouched by updates/restores, a
+  directory-contract customization surface, and narrowly scoped privileged
+  access for the host user (systemd/power control and diagnostics).
 - `image-verification`: a containerized build environment that produces
   identical x86_64 images on macOS arm64 and Windows 11 WSL x86_64, plus a
   headless QEMU harness that installs, boots, and functionally checks the image.

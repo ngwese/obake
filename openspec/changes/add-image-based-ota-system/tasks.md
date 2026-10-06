@@ -5,16 +5,19 @@ Shapes are out of scope for this change; no `shapes/*` files are touched. The
 
 ## 1. Build environment and image pipeline
 
-- [ ] 1.1a Create a pinned, containerized Linux build environment and verify the
+- [x] 1.1a Create a pinned, containerized Linux build environment and verify the
   build runs in the container on macOS arm64.
 - [x] 1.1b Verify the build runs in the same containerized environment on
   Windows 11 WSL x86_64.
-- [ ] 1.2a On macOS arm64, build the x86_64 image and record the artifact
+- [x] 1.2a On macOS arm64, build the x86_64 image and record the artifact
   digests.
 - [x] 1.2b On Windows 11 WSL x86_64, build the x86_64 image and record the
   artifact digests.
 - [ ] 1.2c Compare the macOS arm64 and WSL x86_64 digests recorded by 1.2a/1.2b
-  and confirm the artifacts are equivalent. Depends on 1.2a.
+  and confirm the artifacts are equivalent. Depends on 1.2a. Blocked: the
+  committed WSL baseline predates the 440add5 build-input changes and the rolling
+  trixie mirror drifts, so it no longer matches a current build; both records
+  must be regenerated from the same package set (ideally a pinned snapshot).
 - [x] 1.3 Create the layered build skeleton (base, kernel, tuning, runtime)
   over mmdebstrap on a pinned Debian trixie base; verify the base layer builds
   a minimal rootfs.
@@ -139,7 +142,7 @@ Shapes are out of scope for this change; no `shapes/*` files are touched. The
   when the update is deliberately broken.
 - [x] 7.3c Add an update-revert functional check to the harness; verify it fails
   when revert is deliberately broken. Depends on section 5.
-- [ ] 7.4a Verify the harness runs without a display and reports a deterministic
+- [x] 7.4a Verify the harness runs without a display and reports a deterministic
   pass or fail on macOS arm64.
 - [x] 7.4b Verify the harness runs without a display and reports a deterministic
   pass or fail on Windows 11 WSL x86_64.

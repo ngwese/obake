@@ -119,10 +119,10 @@ shape/app versions are bumped. The affected host material is `image/os`,
 
 ## 9. Board support
 
-- [ ] 9.1 Add `generic` and `rk35xx` board defconfigs over the shared base;
+- [x] 9.1 Add `generic` and `rk35xx` board defconfigs over the shared base;
   verify both images derive from the same base and differ only in the board
   overlay.
-- [ ] 9.2 Add the RK35xx DTB and bootloader configuration; verify a board image
+- [x] 9.2 Add the RK35xx DTB and bootloader configuration; verify a board image
   builds and record its boot path.
 
 ## 10. Deterministic inputs and reproducibility

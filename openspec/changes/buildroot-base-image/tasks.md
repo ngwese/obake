@@ -136,9 +136,11 @@ shape/app versions are bumped. The affected host material is `image/os`,
 
 ## 11. Integration verification
 
-- [ ] 11.1 On x86_64, run install, customize, update, forced failed update, and
+- [x] 11.1 On x86_64, run install, customize, update, forced failed update, and
   revert via `qemu/integration-test.sh`; verify reversion and an unchanged user
-  partition.
+  partition. The harness now builds its images through the Buildroot artifact
+  wrapper and assembles the slot-A/slot-B bundles with `make-bundle.sh`; the
+  guest asserts the user partition is byte-identical after the revert.
 - [ ] 11.2 On the macOS arm64 aarch64 proxy, run the same integration flow;
   verify it behaves as on x86_64.
 - [ ] 11.3 Retire the Debian `image/os` build and verify no `image/os` path still

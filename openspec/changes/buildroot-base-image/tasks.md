@@ -113,7 +113,7 @@ shape/app versions are bumped. The affected host material is `image/os`,
   artifacts produced on a different host.
 - [x] 8.3 Add the macOS arm64 aarch64 proxy loop (QEMU `virt` + `edk2-aarch64` +
   `hvf`); verify an aarch64 image boots accelerated and record its duration.
-- [ ] 8.4 Document the build/verify split and proxy loop in
+- [x] 8.4 Document the build/verify split and proxy loop in
   `image/verification/README.md`; verify the documented commands reproduce a
   passing run.
 

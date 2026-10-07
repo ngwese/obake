@@ -127,10 +127,10 @@ shape/app versions are bumped. The affected host material is `image/os`,
 
 ## 10. Deterministic inputs and reproducibility
 
-- [ ] 10.1 Emit the pinned-input set (Buildroot release, package versions,
+- [x] 10.1 Emit the pinned-input set (Buildroot release, package versions,
   kernel, runtime); verify a same-host rebuild from unchanged pins yields a
   reproducible rootfs archive.
-- [ ] 10.2 Update `verification/reproducibility.sh` for the new artifacts and
+- [x] 10.2 Update `verification/reproducibility.sh` for the new artifacts and
   verify two rebuilds with frozen caches select identical package, kernel, and
   runtime versions.
 

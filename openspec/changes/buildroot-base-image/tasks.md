@@ -96,22 +96,22 @@ shape/app versions are bumped. The affected host material is `image/os`,
 - [x] 7.2 Port `/var` tmpfs with its persisted subset, the persist and user
   partitions, and `tmpfiles.d`; verify `qemu/persist-test.sh` passes and
   `BREAK=var`/`BREAK=user` fail, and update `image/docs/host-config.md`.
-- [ ] 7.3 Wire `rauc/system.conf`, `obake-efi-entries.service`, the health gate,
+- [x] 7.3 Wire `rauc/system.conf`, `obake-efi-entries.service`, the health gate,
   and `obake-update` onto the new base; verify `qemu/update-test.sh` and
   `qemu/health-test.sh` pass and `image/docs/os-update.md` matches.
-- [ ] 7.4 Rebuild the installer from the Buildroot base; verify
+- [x] 7.4 Rebuild the installer from the Buildroot base; verify
   `qemu/install-test.sh`, `qemu/install-interactive-test.sh`, and
   `qemu/reinstall-test.sh` pass, and update `image/installer/README.md`.
 
 ## 8. Build and verification decoupling
 
-- [ ] 8.1 Make the build container native to the host architecture and remove
+- [x] 8.1 Make the build container native to the host architecture and remove
   QEMU and OVMF from it; verify a build emits artifacts with no emulator
   present.
-- [ ] 8.2 Make verification consume a prebuilt artifact directory without
+- [x] 8.2 Make verification consume a prebuilt artifact directory without
   building; verify `qemu/boot-test.sh` and `qemu/verify-test.sh` run against
   artifacts produced on a different host.
-- [ ] 8.3 Add the macOS arm64 aarch64 proxy loop (QEMU `virt` + `edk2-aarch64` +
+- [x] 8.3 Add the macOS arm64 aarch64 proxy loop (QEMU `virt` + `edk2-aarch64` +
   `hvf`); verify an aarch64 image boots accelerated and record its duration.
 - [ ] 8.4 Document the build/verify split and proxy loop in
   `image/verification/README.md`; verify the documented commands reproduce a

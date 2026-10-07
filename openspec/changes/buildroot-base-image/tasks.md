@@ -70,10 +70,12 @@ shape/app versions are bumped. The affected host material is `image/os`,
 
 ## 5. Singularity CE runtime
 
-- [ ] 5.1 Add `package/singularity/` with a pinned tarball and SHA-256 and build
-  it with the cross-toolchain, and select it from `obake-runtime`; verify
-  `singularity version` in the image matches the pin.
-- [ ] 5.2 Verify the runtime executes a container non-interactively on the
+- [x] 5.1 Add `package/singularity/` with a pinned tarball (4.5.1, since 4.6.0
+  needs Go >= 1.26.8 and Buildroot ships 1.26.3) and SHA-256, build it with the
+  cross-toolchain, and select it from an `obake-container` meta-package that
+  `obake-runtime` selects; verify `singularity version` in the image matches the
+  pin.
+- [x] 5.2 Verify the runtime executes a container non-interactively on the
   booted image without a package manager present.
 
 ## 6. Per-slot unified kernel images and artifacts

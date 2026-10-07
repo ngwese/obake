@@ -85,9 +85,15 @@ and future board defconfigs reuse it.
 
 `obake-runtime` selects, at present: `obake-jack2` (jackd + jackdbus),
 `alsa-utils`, `usb-modeswitch`, `nftables`, `avahi` (+ daemon), `nss-mdns`,
-`libcurl` (+ the `curl` binary), `iproute2`, `sudo`, and `git`, plus the
-Singularity package once section 5 provides it. `obake-jack2` needs
-`BR2_TOOLCHAIN_BUILDROOT_CXX`, enabled in the base.
+`libcurl` (+ the `curl` binary), `iproute2`, `sudo`, `git`, and
+`obake-container`. `obake-jack2` needs `BR2_TOOLCHAIN_BUILDROOT_CXX`, enabled
+in the base.
+
+The **container runtime** is its own meta-package, `obake-container`
+(`package/obake-container/`), because SingularityCE pulls a large dependency
+tree (Go, gnupg2/gpgme, cryptsetup, FUSE3, seccomp, squashfs tools, …). Keeping
+it a named meta-package, selected by `obake-runtime`, matches the meta-package
+pattern and keeps the audio/network runtime separate from the container runtime.
 
 `rtkit` is intentionally not included: Buildroot has no `rtkit` package, and
 realtime scheduling and locked memory are already provided by the `limits.d`
@@ -165,14 +171,25 @@ image version.
 ### Singularity CE as a native in-tree package
 
 Add `package/singularity/` under `BR2_EXTERNAL`: a pinned source tarball plus
-SHA-256, built from source with the cross-toolchain. This keeps the "built from
-source" property the spec requires and removes the staged-blob copy step.
+SHA-256, built from source with the cross-toolchain via its `mconfig`/`makeit`
+build system, and its CGO code cross-built with the Buildroot Go toolchain
+(`HOST_GO_TARGET_ENV`). This keeps the "built from source" property the spec
+requires and removes the staged-blob copy step. The container runtime is
+grouped under the `obake-container` meta-package (see the layer model above).
 
-This is the highest-risk task because Singularity CE is C + Go with a wide
-dependency tree (libseccomp, squashfs, cryptsetup, FUSE, gpgme, glib). The
-planned fallback, if some dependency cannot be cross-built cleanly, is a
-pinned prebuilt staged tree installed by a package (which would require a spec
-change); we do not take that fallback unless forced.
+The pin is **SingularityCE 4.5.1**, not 4.6.0: 4.6.0's `go.mod` requires Go
+>= 1.26.8, while Buildroot's newest Go is 1.26.6 (even in 2026.08) and our
+pinned 2026.02.3 ships 1.26.3. 4.5.1 requires Go >= 1.25.9, which the pinned
+toolchain satisfies. Revisit the pin when a Buildroot/Go bump provides 1.26.8+.
+
+The runtime is configured `--without-suid` (the host runs as root) and
+`--without-libsubid`. The board kernel config must provide loop devices
+(`CONFIG_BLK_DEV_LOOP`) and SquashFS (`CONFIG_SQUASHFS` plus the decompressors)
+so the runtime can mount SIF images. This is the highest-risk task because
+Singularity CE is C + Go with a wide dependency tree (libseccomp, squashfs,
+cryptsetup, FUSE, gpgme). The planned fallback, if some dependency cannot be
+cross-built cleanly, is a pinned prebuilt staged tree installed by a package
+(which would require a spec change); we do not take that fallback unless forced.
 
 ### Boot model: per-slot UKI retained
 

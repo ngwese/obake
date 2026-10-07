@@ -43,6 +43,10 @@ Common types: `feat`, `fix`, `chore`, `docs`, `refactor`, `test`, `build`,
 `ci`, `perf`. Scope is often a shape name (e.g. `chuck`, `rnbo-runner`) or
 `host`.
 
+Commit messages MUST describe only the change itself. Do NOT mention task
+numbers (completed or not yet completed) or build/verification status; that
+belongs in the OpenSpec task tracking, not in the repository history.
+
 Examples:
 
 ```

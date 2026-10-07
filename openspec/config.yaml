@@ -40,7 +40,8 @@ context: |
   ChucK, SBCL/Common Lisp, C++/CMake (RNBO), git-lfs.
 
   Commit conventions: Conventional Commits, with a maximum commit message line
-  length of 80 characters.
+  length of 80 characters. Commit messages describe only the change itself;
+  they must not mention task numbers (completed or not) or build status.
 
 # Per-artifact rules (optional)
 rules:
@@ -61,7 +62,11 @@ operations:
     guidance:
       - Use Conventional Commits and keep every commit message line to 80
         characters or fewer.
+      - Describe only the change in commit messages. Do not mention task
+        numbers (completed or not) or build/verification status.
   archive:
     guidance:
       - Use Conventional Commits and keep every commit message line to 80
         characters or fewer.
+      - Describe only the change in commit messages. Do not mention task
+        numbers (completed or not) or build/verification status.

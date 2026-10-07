@@ -90,10 +90,10 @@ shape/app versions are bumped. The affected host material is `image/os`,
 
 ## 7. Writable contract, OTA, and installer
 
-- [ ] 7.1 Re-host the `/etc` overlay hook in the Buildroot initramfs; verify the
+- [x] 7.1 Re-host the `/etc` overlay hook in the Buildroot initramfs; verify the
   overlay persists across a reboot and a slot switch and that `BREAK=etc` fails
   the check.
-- [ ] 7.2 Port `/var` tmpfs with its persisted subset, the persist and user
+- [x] 7.2 Port `/var` tmpfs with its persisted subset, the persist and user
   partitions, and `tmpfiles.d`; verify `qemu/persist-test.sh` passes and
   `BREAK=var`/`BREAK=user` fail, and update `image/docs/host-config.md`.
 - [ ] 7.3 Wire `rauc/system.conf`, `obake-efi-entries.service`, the health gate,

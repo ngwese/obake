@@ -194,10 +194,17 @@ cross-built cleanly, is a pinned prebuilt staged tree installed by a package
 ### Boot model: per-slot UKI retained
 
 Retain the per-slot unified kernel image and RAUC's `efi` bootloader backend.
-Buildroot produces `vmlinuz` and the initramfs; a post-image step invokes
-`ukify` with the systemd EFI stub (from the host) to emit `obake-<slot>.efi`,
-matching the current naming. `rauc/system.conf`, `obake-efi-entries.service`,
-and the slot layout are unchanged.
+A post-image step (`board/obake/post-image.sh`) invokes `ukify` (from
+Buildroot's `host-systemd`) to emit `obake-<slot>.efi`, then reuses
+`scripts/make-disk.sh` and `scripts/sign.sh`. `rauc/system.conf`,
+`obake-efi-entries.service`, and the slot layout are unchanged.
+
+`ukify` needs a systemd EFI stub. Buildroot only builds a stub for x86 targets
+(`BR2_PACKAGE_SYSTEMD_BOOT`), so the x86_64 defconfig enables it and uses the
+in-tree stub, while the aarch64 stub is built once from the pinned systemd
+source and vendored under `vendor/efi-stub/` (hashed in `pins.json`). The
+initramfs is bundled once the writable-contract work provides it; until then
+the UKI carries the kernel and command line only.
 
 ```
   ESP  /EFI/Linux/obake-a.efi   obake-b.efi     (per-slot UKIs)

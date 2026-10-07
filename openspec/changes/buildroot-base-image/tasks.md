@@ -80,12 +80,12 @@ shape/app versions are bumped. The affected host material is `image/os`,
 
 ## 6. Per-slot unified kernel images and artifacts
 
-- [ ] 6.1 Add a post-image step invoking `ukify` to emit `obake-<slot>.efi`; verify
+- [x] 6.1 Add a post-image step invoking `ukify` to emit `obake-<slot>.efi`; verify
   the UKI filename encodes its slot and embeds the expected cmdline.
-- [ ] 6.2 Emit `root-<slot>.img`/`.tar`, `disk-<slot>.img`, `VERSION`,
+- [x] 6.2 Emit `root-<slot>.img`/`.tar`, `disk-<slot>.img`, `VERSION`,
   `SHA256SUMS`, and `image-manifest.json` from `partition-layout.json`; verify the
   disk image boots the active slot under QEMU.
-- [ ] 6.3 Reuse `scripts/sign.sh` and `scripts/verify-signature.sh`; verify the
+- [x] 6.3 Reuse `scripts/sign.sh` and `scripts/verify-signature.sh`; verify the
   signature validates a good artifact and rejects a tampered one.
 
 ## 7. Writable contract, OTA, and installer

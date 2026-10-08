@@ -1,41 +1,69 @@
 # os-image-build Specification
 
 ## Purpose
-Builds bootable obake OS images from replaceable layers so that the base system
-can be rebased for security updates without reworking kernel, tuning, or runtime
-work, and emits versioned, signed artifacts the update system can install.
+Builds bootable obake OS images from a single pinned Buildroot tree so that
+every input is deterministic across rebuilds and boards, and emits versioned,
+signed artifacts the update system can install.
 
 ## Requirements
 
-### Requirement: Layered reproducible build
+### Requirement: Deterministic pinned build
 
-The system SHALL build OS images from ordered, independently replaceable layers
-consisting of at least a minimal base distribution, a kernel layer, a tuning
-layer, and a runtime layer. Replacing the base layer with a newer release SHALL
-not require modifying the higher layers.
+The build SHALL derive every input from a pinned Buildroot release and pinned
+package versions and source hashes, so that rebuilding with unchanged pins
+selects the same base userland, kernel, and runtime regardless of when or where
+the build runs, and SHALL emit a reproducible root filesystem archive as its
+canonical artifact.
 
-#### Scenario: Base rebase without higher-layer changes
+#### Scenario: Same pins select the same inputs
 
-- **WHEN** the base layer is bumped to a newer distribution release
-- **THEN** the image rebuilds using unchanged kernel, tuning, and runtime layer
-  definitions
+- **WHEN** the image is rebuilt with unchanged pins at a later time or on
+  another host
+- **THEN** the same package versions, kernel version, and runtime version are
+  selected
+
+#### Scenario: Stable inputs across boards
+
+- **WHEN** an image is rebuilt for a new board from the same pins
+- **THEN** the shared base userland, kernel, and runtime are unchanged and only
+  the board-specific configuration differs
 
 #### Scenario: Reproducible artifact
 
-- **WHEN** the same layer definitions and pinned inputs are built twice
-- **THEN** the resulting image artifacts are byte-identical
+- **WHEN** the same pinned inputs are built twice
+- **THEN** the resulting root filesystem archive is reproducible
+
+### Requirement: Minimal systemd base userland
+
+The image SHALL provide a minimal, systemd-based userland that includes at
+least a shell, common administration tools, and the Singularity runtime needed
+by the host contract, and SHALL NOT require a distribution package manager at
+runtime.
+
+#### Scenario: Required tools present
+
+- **WHEN** an image is built
+- **THEN** the userland provides `bash`, `grep`, `git`, `vi`, `sudo`, `ip`,
+  `systemctl`, `journalctl`, `dmesg`, and `singularity`
+
+#### Scenario: No package manager dependency
+
+- **WHEN** the running host is used
+- **THEN** no runtime package manager is required for the host contract to
+  function
 
 ### Requirement: Custom realtime kernel
 
-Each image SHALL include a custom kernel configured for realtime audio
-performance and SHALL version that kernel together with the image it is built
-into.
+Each image SHALL include a realtime kernel built from a pinned kernel source
+with a project realtime configuration fragment, and SHALL version that kernel
+together with the image it is built into.
 
 #### Scenario: Realtime tuning present in image
 
 - **WHEN** an image is built
-- **THEN** the included kernel carries the project's realtime configuration and
-  the image reports a kernel version tied to the image version
+- **THEN** the included kernel is built from the pinned source with the
+  project's realtime configuration and the image reports a kernel version tied
+  to the image version
 
 ### Requirement: Per-board tuning without forking the base
 
@@ -46,8 +74,8 @@ fork the base system.
 #### Scenario: Two boards share one base
 
 - **WHEN** images are built for two different target boards
-- **THEN** both images derive from the same base layer and differ only in the
-  board-specific tuning layer
+- **THEN** both images derive from the same base Buildroot configuration and
+  differ only in the board's defconfig and overlay
 
 ### Requirement: Per-slot unified kernel image
 
@@ -73,11 +101,11 @@ the update system can verify before installing them.
 
 ### Requirement: Singularity CE runtime built from source
 
-The image SHALL include a Singularity CE runtime built from source at a pinned
-version, because distribution-provided packages are too old or absent.
+The build SHALL provide a pinned Singularity CE runtime built from source, so
+that the runtime does not depend on a distribution package.
 
 #### Scenario: Pinned Singularity CE present
 
 - **WHEN** an image is built
-- **THEN** the runtime layer provides the pinned Singularity CE version built
-  from source rather than a distribution package
+- **THEN** the runtime provides the pinned Singularity CE version built from
+  source rather than a distribution package

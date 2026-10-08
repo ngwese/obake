@@ -141,7 +141,7 @@ shape/app versions are bumped. The affected host material is `image/os`,
   partition. The harness now builds its images through the Buildroot artifact
   wrapper and assembles the slot-A/slot-B bundles with `make-bundle.sh`; the
   guest asserts the user partition is byte-identical after the revert.
-- [ ] 11.2 On the macOS arm64 aarch64 proxy, run the same integration flow;
+- [x] 11.2 On the macOS arm64 aarch64 proxy, run the same integration flow;
   verify it behaves as on x86_64.
 - [ ] 11.3 Retire the Debian `image/os` build and verify no `image/os` path still
   references the Debian layer model.

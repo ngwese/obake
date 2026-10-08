@@ -1,0 +1,6 @@
+[submodule "image"]
+	path = image
+	url = ../obake-image.git
+[submodule "shapes"]
+	path = shapes
+	url = ../obake-shapes.git

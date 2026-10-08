@@ -143,5 +143,7 @@ shape/app versions are bumped. The affected host material is `image/os`,
   guest asserts the user partition is byte-identical after the revert.
 - [x] 11.2 On the macOS arm64 aarch64 proxy, run the same integration flow;
   verify it behaves as on x86_64.
-- [ ] 11.3 Retire the Debian `image/os` build and verify no `image/os` path still
-  references the Debian layer model.
+- [x] 11.3 Retire the Debian `image/os` build and verify no `image/os` path still
+  references the Debian layer model. The layered `build.sh`, `manifest.json`,
+  `layers/`, `boards/`, and the Debian-only scripts are removed; the stale
+  `ssh-test.sh`/`dev-vm.sh` and docs now use the Buildroot artifact model.

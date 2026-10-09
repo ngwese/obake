@@ -43,7 +43,8 @@ lines without an explicit disable turns the Intel menu back on at
 3. **Three firmware files in the `qdl` rootfs overlay** — copy
    `rtl8125a-3.fw`, `rtl8125b-2.fw`, and `rtl8125d-1.fw` plus the license
    WHENCE names for them into
-   `board/obake/qdl/rootfs-overlay/lib/firmware/rtl_nic/`. `r8169` picks the
+   `board/obake/qdl/rootfs-overlay/usr/lib/firmware/rtl_nic/` (merged `/usr`;
+   a real `lib/` directory fails Buildroot's overlay check). `r8169` picks the
    file from the chip revision at open. Alternative: `BR2_PACKAGE_LINUX_FIRMWARE_RTL_8169`
    (downloads the whole linux-firmware tarball, which is not in `vendor/dl`).
 

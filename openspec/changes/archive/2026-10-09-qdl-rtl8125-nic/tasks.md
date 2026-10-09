@@ -22,7 +22,7 @@
 - [x] 2.1 Copy `rtl8125a-3.fw`, `rtl8125b-2.fw`, and `rtl8125d-1.fw` from the
   linux-firmware `rtl_nic` directory, plus the license file WHENCE cites for
   them, into
-  `image/os/buildroot/board/obake/qdl/rootfs-overlay/lib/firmware/rtl_nic/`.
+  `image/os/buildroot/board/obake/qdl/rootfs-overlay/usr/lib/firmware/rtl_nic/`.
   Verify the three blobs and the license file exist at that path and no
   other linux-firmware files were added.
 

@@ -109,3 +109,100 @@ that the runtime does not depend on a distribution package.
 - **WHEN** an image is built
 - **THEN** the runtime provides the pinned Singularity CE version built from
   source rather than a distribution package
+
+### Requirement: Local display console for hardware boards
+
+A board with no serial console SHALL include a kernel build that drives a text
+console from the firmware-provided EFI framebuffer, so an attached monitor and
+USB keyboard can be used without a GPU driver that the realtime configuration
+excludes.
+
+#### Scenario: Firmware framebuffer text console
+
+- **WHEN** the qdl image is built
+- **THEN** the kernel binds a framebuffer console to the EFI framebuffer and
+  provides a virtual terminal for local output
+
+#### Scenario: Console does not require an RT-incompatible GPU driver
+
+- **WHEN** the qdl kernel is built with the realtime fragment
+- **THEN** the local console works without i915, which the realtime
+  configuration excludes
+
+### Requirement: Board build profiles
+
+Each board SHALL provide a `default` and a `virtual` build profile. A profile
+supplies the board's installer and console build defaults (`MAKE_INSTALLER`,
+`CONSOLE`, `INSTALLER_TARGET_DISK`); `default` targets the physical board and
+`virtual` targets an emulation or verification target, and the generic
+boards' two profiles are identical. When no profile is named the build SHALL
+use `default`, an explicit setting SHALL override the profile value, and an
+unknown profile SHALL fail the build.
+
+#### Scenario: Default profile selected
+
+- **WHEN** a board is built without naming a profile
+- **THEN** it applies the `default` profile's installer and console defaults
+
+#### Scenario: Virtual profile selected
+
+- **WHEN** a board is built naming the `virtual` profile
+- **THEN** it applies that profile's emulation-oriented installer and console
+  defaults
+
+#### Scenario: Explicit setting overrides the profile
+
+- **WHEN** an installer or console setting is also provided explicitly with a
+  profile
+- **THEN** the explicit value takes precedence over the profile value
+
+#### Scenario: Generic profiles are equivalent
+
+- **WHEN** a generic board is built with either profile
+- **THEN** the resulting build configuration is the same
+
+#### Scenario: Unknown profile rejected
+
+- **WHEN** a build names a profile that the board does not provide
+- **THEN** the build fails with an error naming the supported profiles
+
+### Requirement: Profile console for installer and installed OS
+
+The build-time `CONSOLE` setting (`serial` or `local`) SHALL select the
+interactive console for both the installer medium and the installed OS
+unified kernel images, including the kernel command line and getty, so a
+board profile's console choice is consistent from install through first boot.
+
+#### Scenario: Local console on installer and installed OS
+
+- **WHEN** a board is built with `CONSOLE=local`
+- **THEN** the installer medium and each installed OS UKI present on the local
+  text console
+
+#### Scenario: Serial console on installer and installed OS
+
+- **WHEN** a board is built with `CONSOLE=serial`
+- **THEN** the installer medium and each installed OS UKI present on the
+  board's serial console
+
+#### Scenario: qdl default uses local end-to-end
+
+- **WHEN** the qdl board is built with its default profile
+- **THEN** both the installer medium and the installed OS UKIs use the local
+  text console
+
+### Requirement: Board-implied target architecture
+
+Building a board SHALL derive the target architecture from the board's
+configuration, so the operator does not supply an architecture separately.
+
+#### Scenario: Architecture follows the board
+
+- **WHEN** a board is built without an architecture argument
+- **THEN** the emitted image targets the architecture declared by that board
+
+#### Scenario: Distinct architectures from distinct boards
+
+- **WHEN** a board that targets x86_64 and a board that targets aarch64 are
+  built the same way
+- **THEN** each emitted image targets its own board's architecture

@@ -181,9 +181,11 @@ ignored by version control.
 
 ### Requirement: Host-owned build outputs
 
-Files written from the build container to the host SHALL be owned by the user
-who invoked the build, so the user can read, move, and remove them without
-elevated privileges.
+Files written from the build, verification, or developer-VM containers to the
+host SHALL be owned by the user who invoked the tooling, so the user can read,
+move, and remove them without elevated privileges. This includes staged build
+artifacts and host-visible trees under the image repository's underscore
+output directories used for verification and developer-VM work.
 
 #### Scenario: Container outputs owned by the invoking user
 
@@ -192,8 +194,47 @@ elevated privileges.
 
 #### Scenario: Cleanup needs no elevated privileges
 
-- **WHEN** the invoking user removes a completed build's output directory
+- **WHEN** the invoking user removes a completed build's, verification run's,
+  or developer-VM output directory
 - **THEN** the removal succeeds without elevated privileges
+
+#### Scenario: Containerized verification outputs owned by the invoking user
+
+- **WHEN** a harness runs through the verification environment container and
+  writes under the verification or developer-VM output directories
+- **THEN** those host-visible files are owned by the invoking user
+
+### Requirement: Verification environment runs as the invoking user
+
+The containerized verification environment SHALL run as the invoking user's
+uid and gid, and when the host exposes `/dev/kvm` or `/var/run/docker.sock`
+SHALL add the host groups that own those paths so accelerated QEMU and nested
+build invocations keep working. Operator documentation SHALL state these host
+access prerequisites for containerized verification.
+
+#### Scenario: Verify-env identity matches the invoker
+
+- **WHEN** an operator runs a harness through the verification environment
+  wrapper
+- **THEN** processes inside the container run as the invoker's uid and gid
+
+#### Scenario: KVM group added when the device exists
+
+- **WHEN** `/dev/kvm` exists on the host and the verification environment
+  wrapper starts
+- **THEN** the container is granted the host group that owns `/dev/kvm`
+
+#### Scenario: Docker socket group added when the socket exists
+
+- **WHEN** `/var/run/docker.sock` exists on the host and the verification
+  environment wrapper starts
+- **THEN** the container is granted the host group that owns the socket
+
+#### Scenario: Prerequisites documented
+
+- **WHEN** an operator reads the verification or developer QEMU documentation
+- **THEN** the docs state that containerized verification needs access to the
+  Docker socket and, for acceleration, to `/dev/kvm`
 
 ### Requirement: Unique per-board artifact directory
 
@@ -232,6 +273,74 @@ performing a build.
 
 - **WHEN** the artifact directory is requested without building
 - **THEN** the build prints the path and does not run a build
+
+### Requirement: Build product selection
+
+The build entry point SHALL require exactly one product flag, `--installer` or
+`--update`, when performing a build. Omitting both or passing both SHALL fail
+with a usage error. Path discovery without building (`--print-dir`) SHALL NOT
+require a product flag. Board profiles (`default` / `virtual`) SHALL continue to
+supply installer console and target-disk defaults independently of the product
+flag.
+
+#### Scenario: Installer product selected
+
+- **WHEN** an operator builds a board with `--installer`
+- **THEN** the build emits installer media according to the board profile and
+  any explicit installer overrides
+
+#### Scenario: Update product selected
+
+- **WHEN** an operator builds a board with `--update`
+- **THEN** the build emits signed RAUC update bundles and does not emit
+  installer media or a full bootable disk image unless explicitly overridden
+
+#### Scenario: Missing product flag rejected
+
+- **WHEN** an operator invokes the build entry point without `--installer` or
+  `--update`
+- **THEN** the build fails with a usage error naming the required flags
+
+#### Scenario: Both product flags rejected
+
+- **WHEN** an operator passes both `--installer` and `--update`
+- **THEN** the build fails with a usage error
+
+#### Scenario: Print-dir needs no product flag
+
+- **WHEN** an operator asks the build entry point only for the artifact
+  directory path
+- **THEN** the path is printed without requiring `--installer` or `--update`
+
+### Requirement: Default development signing material
+
+When signing certificate, key, or keyring paths are unset, the build entry
+point SHALL use development signing material under the image repository's
+`_build/signing` directory, creating that material if it is missing, so a
+board installed from that host accepts update bundles later produced on the
+same host without manually supplying keys. Explicit signing environment
+variables SHALL override the defaults.
+
+#### Scenario: Update build creates signing material when absent
+
+- **WHEN** an operator builds with `--update` and no signing environment
+  variables, and the default signing directory has no material
+- **THEN** the build creates development signing material there and emits
+  bundles signed with it
+
+#### Scenario: Installer bakes the default keyring when unset
+
+- **WHEN** an operator builds with `--installer` and no keyring environment
+  variable
+- **THEN** the built image trusts the default development CA from
+  `_build/signing`
+
+#### Scenario: Explicit signing overrides defaults
+
+- **WHEN** an operator sets signing certificate, key, or keyring paths
+  explicitly
+- **THEN** the build uses those paths instead of the default development
+  material
 
 ### Requirement: System CA trust store checked after boot
 

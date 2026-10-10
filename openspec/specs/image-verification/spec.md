@@ -321,6 +321,30 @@ when the board under test defines one).
 - **THEN** the checks confirm `uname -r` contains that board suffix and a
   `-g` git shortsha segment
 
+### Requirement: Writable media mount root checked after boot
+
+After a successful boot, the verification SHALL confirm that `/media` is a
+writable mount root suitable for removable-media automount (not merely an
+empty directory on the read-only root), so a read-only `/media` fails
+headless verification before release.
+
+#### Scenario: Media root is writable
+
+- **WHEN** guest functional checks run after boot
+- **THEN** the suite fails unless `/media` is mounted and a privileged probe
+  can create and remove a directory under `/media`
+
+### Requirement: ESP access checked after boot
+
+After a successful boot, the verification SHALL confirm that the `obake` user
+can access `/boot/efi` without sudo, so an owner-only ESP mount fails headless
+verification before release.
+
+#### Scenario: Guest can access ESP as obake
+
+- **WHEN** guest functional checks run after boot
+- **THEN** the suite fails unless `obake` can list `/boot/efi` without sudo
+
 ### Requirement: Login accounting checked over SSH
 
 After a successful SSH login as `obake` in QEMU, the verification SHALL confirm

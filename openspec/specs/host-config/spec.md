@@ -82,10 +82,11 @@ updates or by system reinstalls that preserve user data.
 ### Requirement: Directory-contract customization
 
 The system SHALL define a directory contract that names the locations that are
-writable for host configuration and user data. A user connecting over SSH as
-`obake` SHALL be able to write under `/home`, and SHALL NOT be able to write
-`/etc` or the read-only operating system root. System services MAY still write
-the `/etc` overlay and other contract mounts as root.
+writable for host configuration and user data, including volatile `/media` as
+the removable-media mount root. A user connecting over SSH as `obake` SHALL be
+able to write under `/home`, and SHALL NOT be able to write `/etc` or the
+read-only operating system root. System services MAY still write the `/etc`
+overlay and other contract mounts as root.
 
 #### Scenario: User customizes within the contract
 
@@ -104,6 +105,11 @@ the `/etc` overlay and other contract mounts as root.
 - **WHEN** a user connected over SSH as `obake` attempts to modify the
   read-only root outside the contract
 - **THEN** the modification fails
+
+#### Scenario: Media mount root is listed as volatile
+
+- **WHEN** an operator reads the directory contract
+- **THEN** `/media` is named as the volatile removable-media mount root
 
 ### Requirement: Host user privileged access
 
@@ -167,10 +173,12 @@ run root-owned services.
 ### Requirement: Removable media auto-mount for obake
 
 When a removable storage partition appears, the system SHALL mount it
-automatically for the `obake` user under `/media/<name>`, where `<name>` is
-the filesystem label when present, or a stable fallback derived from the
-volume identity when the volume is unlabeled. The mount SHALL be readable by
-`obake` without additional privilege.
+automatically under `/media/<name>` in the host mount namespace, where `<name>`
+is the filesystem label when present, or a stable fallback derived from the
+volume identity when unlabeled. `/media` SHALL be a writable mount root so
+mountpoint directories can be created on the read-only OS image. The mount
+SHALL be readable by `obake` without additional privilege and SHALL be
+visible to processes that bind-mount `/media` (including Singularity).
 
 #### Scenario: Labeled removable volume mounts under /media
 
@@ -188,6 +196,42 @@ volume identity when the volume is unlabeled. The mount SHALL be readable by
 
 - **WHEN** the removable media is detached
 - **THEN** the corresponding `/media/<name>` mount is removed
+
+#### Scenario: Media root accepts mountpoint directories
+
+- **WHEN** the host has finished boot
+- **THEN** `/media` is a writable mount root (not a directory on the
+  read-only root alone) so a privileged process can create and remove a
+  directory under `/media`
+
+#### Scenario: Mount is visible for container bind
+
+- **WHEN** a removable volume is auto-mounted under `/media/<name>`
+- **THEN** that path is present in the host mount namespace so a Singularity
+  bind of `/media` can expose the volume inside the container
+
+### Requirement: ESP readable by obake
+
+The EFI System Partition mounted at `/boot/efi` SHALL be readable and listable
+by the `obake` login user without additional privilege. The `/boot` path prefix
+SHALL be traversable by that user so ordinary diagnostics (for example `df`)
+can resolve the mount without Permission denied.
+
+#### Scenario: obake can list the ESP
+
+- **WHEN** the `obake` user runs `ls /boot/efi` after boot
+- **THEN** the command succeeds and lists ESP contents without sudo
+
+#### Scenario: df can resolve the ESP mount
+
+- **WHEN** the `obake` user runs `df` after boot
+- **THEN** the command does not fail with Permission denied for `/boot/efi`
+
+#### Scenario: Non-root cannot write the ESP
+
+- **WHEN** the `obake` user attempts to create a file under `/boot/efi`
+  without sudo
+- **THEN** the write fails
 
 ### Requirement: Login accounting for last
 

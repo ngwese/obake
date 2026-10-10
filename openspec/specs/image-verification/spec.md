@@ -165,9 +165,10 @@ verification consumes the emitted artifact set rather than build internals.
 
 ### Requirement: Build outputs within the image repository
 
-Every host-visible build output directory SHALL live inside the image
-repository, SHALL have a name beginning with an underscore, and SHALL be
-ignored by version control.
+Every host-visible build or verification output directory SHALL live inside the
+image repository, SHALL have a name beginning with an underscore, and SHALL be
+ignored by version control. This includes staged build artifacts and harness
+work or log trees produced by verification and developer-VM tooling.
 
 #### Scenario: Outputs inside the repository
 
@@ -179,13 +180,22 @@ ignored by version control.
 - **WHEN** output directories have been created by a build
 - **THEN** version control ignores them
 
+#### Scenario: Harness work and logs under underscore directories
+
+- **WHEN** a verification harness runs with default output paths
+- **THEN** its host-visible work directory and log files are created under an
+  underscore-named directory inside the image repository
+
 ### Requirement: Host-owned build outputs
 
 Files written from the build, verification, or developer-VM containers to the
 host SHALL be owned by the user who invoked the tooling, so the user can read,
 move, and remove them without elevated privileges. This includes staged build
 artifacts and host-visible trees under the image repository's underscore
-output directories used for verification and developer-VM work.
+output directories used for verification and developer-VM work. The tooling
+SHALL also reclaim known leftover foreign-owned verification scratch that
+predated underscore defaults so the invoking user can remove it without
+elevated privileges.
 
 #### Scenario: Container outputs owned by the invoking user
 
@@ -204,13 +214,21 @@ output directories used for verification and developer-VM work.
   writes under the verification or developer-VM output directories
 - **THEN** those host-visible files are owned by the invoking user
 
+#### Scenario: Legacy harness scratch reclaimable without elevated privileges
+
+- **WHEN** foreign-owned leftover files exist at known former harness default
+  paths beside the verification scripts
+- **THEN** the ownership reclaim path makes those files owned by the invoking
+  user so removal succeeds without elevated privileges
+
 ### Requirement: Verification environment runs as the invoking user
 
 The containerized verification environment SHALL run as the invoking user's
 uid and gid, and when the host exposes `/dev/kvm` or `/var/run/docker.sock`
 SHALL add the host groups that own those paths so accelerated QEMU and nested
 build invocations keep working. Operator documentation SHALL state these host
-access prerequisites for containerized verification.
+access prerequisites for containerized verification, including the Docker
+Buildx CLI plugin required to build the environment images.
 
 #### Scenario: Verify-env identity matches the invoker
 
@@ -233,8 +251,29 @@ access prerequisites for containerized verification.
 #### Scenario: Prerequisites documented
 
 - **WHEN** an operator reads the verification or developer QEMU documentation
-- **THEN** the docs state that containerized verification needs access to the
-  Docker socket and, for acceleration, to `/dev/kvm`
+- **THEN** the docs state that containerized verification needs the Docker
+  Buildx CLI plugin, access to the Docker socket, and, for acceleration, to
+  `/dev/kvm`
+
+### Requirement: Environment images built with Docker Buildx
+
+The build-environment and verification-environment wrappers SHALL build their
+container images with Docker Buildx (BuildKit). When the Buildx CLI plugin is
+unavailable they SHALL fail immediately with an error that names the missing
+dependency and how to install it, and SHALL NOT fall back to the legacy
+Docker builder.
+
+#### Scenario: Env image build uses Buildx
+
+- **WHEN** an operator invokes the build-environment or verification-
+  environment wrapper and the env image must be (re)built
+- **THEN** the wrapper builds that image through Docker Buildx
+
+#### Scenario: Missing Buildx fails loudly
+
+- **WHEN** the Buildx CLI plugin is not available on the host
+- **THEN** the wrapper exits non-zero with a message that identifies the
+  missing Buildx dependency before attempting a legacy `docker build`
 
 ### Requirement: Unique per-board artifact directory
 

@@ -46,9 +46,10 @@ The system SHALL be able to obtain update bundles from a configured signed
 HTTPS endpoint and from removable USB media, using the same bundle format and
 the same signature verification for both. When a bundle is present on
 auto-mounted removable media under `/media` the system SHALL prefer that USB
-source over HTTPS. The `obake` user SHALL be able to request apply/rollback
-without unlocking the root account, using the host's limited sudo grant for
-`obake-update`.
+source over HTTPS. The update client SHALL also accept a caller-supplied local
+bundle path on `apply`, with the same signature verification as other sources.
+The `obake` user SHALL be able to request apply/rollback without unlocking the
+root account, using the host's limited sudo grant for `obake-update`.
 
 #### Scenario: Airgapped update from USB
 
@@ -68,6 +69,20 @@ without unlocking the root account, using the host's limited sudo grant for
   available
 - **THEN** the install proceeds without logging in as root and without an
   interactive password prompt
+
+#### Scenario: Apply a local bundle path as obake
+
+- **WHEN** the `obake` user runs `obake-update apply` with a path to a signed
+  local `.raucb` file
+- **THEN** the system installs that bundle using the same signature check as
+  USB and HTTPS sources, without a root login or interactive password prompt
+
+#### Scenario: Reject a local invalid bundle as obake
+
+- **WHEN** the `obake` user runs `obake-update apply` with a path to a
+  tampered or untrusted local `.raucb` file
+- **THEN** the system rejects it, reports the failure, and leaves all slots
+  unchanged
 
 ### Requirement: A/B slot application with kernel
 

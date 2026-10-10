@@ -81,20 +81,28 @@ updates or by system reinstalls that preserve user data.
 
 ### Requirement: Directory-contract customization
 
-The system SHALL define a directory contract that names the locations a user may
-customize, and a user connecting over SSH SHALL be able to modify configuration
-only within those locations.
+The system SHALL define a directory contract that names the locations that are
+writable for host configuration and user data. A user connecting over SSH as
+`obake` SHALL be able to write under `/home`, and SHALL NOT be able to write
+`/etc` or the read-only operating system root. System services MAY still write
+the `/etc` overlay and other contract mounts as root.
 
 #### Scenario: User customizes within the contract
 
-- **WHEN** a user connected over SSH modifies a file within a directory named by
-  the contract
-- **THEN** the change persists as defined by the writable contract
+- **WHEN** a user connected over SSH as `obake` modifies a file under
+  `/home/obake`
+- **THEN** the change persists on the user partition across boots and updates
+
+#### Scenario: User cannot write /etc over SSH
+
+- **WHEN** a user connected over SSH as `obake` attempts to create or modify a
+  file under `/etc`
+- **THEN** the modification fails
 
 #### Scenario: User cannot modify outside the contract
 
-- **WHEN** a user connected over SSH attempts to modify the read-only root
-  outside the contract
+- **WHEN** a user connected over SSH as `obake` attempts to modify the
+  read-only root outside the contract
 - **THEN** the modification fails
 
 ### Requirement: Host user privileged access

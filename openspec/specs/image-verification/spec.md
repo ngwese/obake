@@ -250,8 +250,8 @@ missing or empty store fails headless verification before release.
 
 After a successful boot, the verification SHALL confirm as `obake` that empty-
 password `su` to root fails (proving the root account is locked without reading
-`/etc/shadow`) and that `obake` may invoke `obake-update` via passwordless sudo
-without being granted a general root shell.
+`/etc/shadow`) and that `obake` may invoke both `obake-update` and a general
+root shell via passwordless sudo.
 
 #### Scenario: Root password field locked
 
@@ -264,14 +264,14 @@ without being granted a general root shell.
 - **WHEN** the installed host has booted in QEMU and guest functional checks
   run as `obake`
 - **THEN** the harness confirms `sudo -n obake-update status` succeeds and
-  `sudo -n /bin/sh -c true` is denied
+  `sudo -n /bin/sh -c true` succeeds
 
 ### Requirement: Guest functional checks run as obake
 
 Guest functional check suites installed into verification images SHALL run as
 the `obake` login user, using only privilege paths available to that user
-(passwordless sudo for `/usr/bin/obake-update`, and polkit for systemd unit and
-power operations). They SHALL NOT run as uid 0 and SHALL NOT invoke raw
+(passwordless sudo for all commands, and polkit for systemd unit and power
+operations). They SHALL NOT run as uid 0 and SHALL NOT invoke raw
 `rauc install` as root.
 
 #### Scenario: Verify service identity

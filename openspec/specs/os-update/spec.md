@@ -49,7 +49,7 @@ auto-mounted removable media under `/media` the system SHALL prefer that USB
 source over HTTPS. The update client SHALL also accept a caller-supplied local
 bundle path on `apply`, with the same signature verification as other sources.
 The `obake` user SHALL be able to request apply/rollback without unlocking the
-root account, using the host's limited sudo grant for `obake-update`.
+root account, using the host's passwordless sudo grant.
 
 #### Scenario: Airgapped update from USB
 

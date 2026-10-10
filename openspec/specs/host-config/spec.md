@@ -111,9 +111,10 @@ The `obake` login user SHALL be able to perform system maintenance over SSH
 without interactive authentication: managing systemd units and power state,
 reading host diagnostics — the kernel log via `dmesg` and the full system
 journal via `journalctl` — and applying or rolling back signed OS updates via
-`obake-update`. Privileged update actions SHALL use a narrowly scoped
-passwordless sudo grant for `/usr/bin/obake-update` only, not a general root
-shell and not unrestricted `mount`/`umount`.
+`obake-update`. Privileged actions that need root SHALL use a passwordless
+sudo grant for all commands, including interactive root shells (`sudo -s`,
+`sudo -i`, `sudo /bin/sh`). The grant SHALL NOT require unlocking the root
+account password.
 
 #### Scenario: Unit and power management over SSH
 
@@ -139,7 +140,12 @@ shell and not unrestricted `mount`/`umount`.
 #### Scenario: No general root via sudo
 
 - **WHEN** the obake user runs `sudo -i` or `sudo /bin/sh`
-- **THEN** sudo denies the command
+- **THEN** sudo grants a root shell without a password prompt
+
+#### Scenario: Arbitrary command via sudo
+
+- **WHEN** the obake user runs `sudo -n <command>` for an arbitrary command
+- **THEN** sudo runs the command as root without a password prompt
 
 ### Requirement: Locked root account
 

@@ -1,5 +1,8 @@
 # editor temporaries
 *~
 
+# singularity build artifacts
+*.sif
+
 # macOS metadata
 .DS_Store

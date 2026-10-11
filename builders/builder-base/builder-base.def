@@ -1,0 +1,32 @@
+Bootstrap: docker
+From: debian:trixie-slim
+
+%environment
+	export LC_ALL=C
+	export RUSTUP_HOME=/usr/local/rustup
+	export CARGO_HOME=$HOME/.cargo
+	export PATH=/usr/local/cargo/bin:$PATH
+
+%post
+	export DEBIAN_FRONTEND=noninteractive
+	export RUSTUP_HOME=/usr/local/rustup
+	export CARGO_HOME=/usr/local/cargo
+
+	apt-get update
+	apt-get install -y \
+		build-essential \
+		binutils \
+		clang \
+		cmake \
+		curl \
+		wget \
+		ca-certificates \
+		python3 \
+		git \
+		xz-utils
+	rm -rf /var/lib/apt/lists/*
+
+	curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup-init.sh
+	sh /tmp/rustup-init.sh -y --no-modify-path --default-toolchain stable
+	rm -f /tmp/rustup-init.sh
+	chmod -R a+rX /usr/local/rustup /usr/local/cargo

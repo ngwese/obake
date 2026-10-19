@@ -11,7 +11,8 @@ See proposal.md for motivation. Behavior that shapes the approach:
 - `shapes/rnbo-runner/rnbo-runner.def` is the same Bookworm pair. CMake sets
   `-DWITH_JACKSERVER=Off`, so the runner is a JACK client and does not start
   `jackd`. The final stage still installs `libjack-jackd2-dev` and a large
-  build toolchain. The packed version is `1.4.4-8`.
+  build toolchain. The packed version is `1.4.5-9` (SDK tarball
+  `rnbo-src-1.4.5.tgz`).
 - PipeWire does not speak the classic JACK socket. The client process must
   load PipeWire's `libjack.so.0`, which talks to the host socket. That
   library is built against the container's glibc. The host glibc is 2.42;
@@ -46,8 +47,9 @@ See proposal.md for motivation. Behavior that shapes the approach:
   JACK clients. The guide still documents the ALSA PCM plugin for other
   shapes.
 - A second PipeWire daemon inside the container.
-- Bumping `chuck_version` or the RNBO `1.4.4-8` pin. Those name the
-  application, not the distro client library.
+- Bumping `chuck_version`. The RNBO pin moves to `1.4.5-9` /
+  `rnbo-src-1.4.5.tgz` with this change so the SDK matches the runner.
+  Those pins name the application, not the distro client library.
 
 ## Decisions
 

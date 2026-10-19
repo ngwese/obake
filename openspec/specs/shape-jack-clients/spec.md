@@ -1,11 +1,11 @@
-# Spec Delta
+# shape-jack-clients Specification
 
 ## Purpose
 
 Lets a Singularity shape's JACK application use the host PipeWire graph by
 shipping a Trixie PipeWire client library and connecting to the host socket.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Shape author guide
 
@@ -29,8 +29,9 @@ image as `obake` against the host PipeWire socket.
 
 `shapes/chuck/chuck.def` and `shapes/rnbo-runner/rnbo-runner.def` SHALL build
 from Debian Trixie. Their runtime images SHALL load PipeWire's `libjack.so.0`
-when the application starts. The ChucK application version pin and the RNBO
-runner version pin SHALL stay at their current values.
+when the application starts. The ChucK application version pin SHALL stay at
+`{{ chuck_version }}`. The RNBO runner pin SHALL be 1.4.5-9 with SDK tarball
+`rnbo-src-1.4.5.tgz`.
 
 #### Scenario: ChucK starts through the PipeWire JACK library
 
@@ -47,7 +48,7 @@ runner version pin SHALL stay at their current values.
 
 - **WHEN** the two definition files are read
 - **THEN** the ChucK pin is still the `chuck_version` template and the RNBO
-  runner pin is still 1.4.4-8
+  runner pin is 1.4.5-9
 
 ### Requirement: Containers do not run an audio server
 

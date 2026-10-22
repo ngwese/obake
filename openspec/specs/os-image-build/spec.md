@@ -672,8 +672,8 @@ The built image SHALL display `Welcome to obake-os` as the login banner
 ### Requirement: Kernel release board and config revision
 
 Each image's kernel release string (`uname -r`) SHALL end with
-`-<board>-<rev>`, where `<board>` is the board id and `<rev>` is a positive
-integer when image git history can be read, and `0` when it cannot. The
+`-<rev>-<board>`, where `<rev>` is a positive integer when image git history
+can be read, and `0` when it cannot. `<board>` is the board id. The
 board id SHALL be `generic-x86_64`, `generic-aarch64`, `rk35xx`, or `qdl`
 for those boards. The release string SHALL NOT contain the image git commit
 and SHALL NOT end with `-dirty`.
@@ -682,26 +682,26 @@ and SHALL NOT end with `-dirty`.
 
 - **WHEN** a `generic-x86_64` image is built from a clean image git tree
 - **THEN** `uname -r` matches
-  `<pinned-kernel-version>-generic-x86_64-<rev>` where `<rev>` is a positive
+  `<pinned-kernel-version>-<rev>-generic-x86_64` where `<rev>` is a positive
   integer
 
 #### Scenario: generic-aarch64 kernel release shape
 
 - **WHEN** a `generic-aarch64` image is built from a clean image git tree
 - **THEN** `uname -r` matches
-  `<pinned-kernel-version>-generic-aarch64-<rev>` where `<rev>` is a positive
+  `<pinned-kernel-version>-<rev>-generic-aarch64` where `<rev>` is a positive
   integer
 
 #### Scenario: rk35xx kernel release shape
 
 - **WHEN** an `rk35xx` image is built from a clean image git tree
-- **THEN** `uname -r` matches `<pinned-kernel-version>-rk35xx-<rev>` where
+- **THEN** `uname -r` matches `<pinned-kernel-version>-<rev>-rk35xx` where
   `<rev>` is a positive integer
 
 #### Scenario: qdl kernel release shape
 
 - **WHEN** a `qdl` image is built from a clean image git tree
-- **THEN** `uname -r` matches `<pinned-kernel-version>-qdl-<rev>` where
+- **THEN** `uname -r` matches `<pinned-kernel-version>-<rev>-qdl` where
   `<rev>` is a positive integer
 
 #### Scenario: Release omits image git
@@ -713,7 +713,7 @@ and SHALL NOT end with `-dirty`.
 #### Scenario: Missing git metadata uses rev 0
 
 - **WHEN** an image is built and the image git metadata cannot be read
-- **THEN** `uname -r` ends with `-<board>-0`
+- **THEN** `uname -r` ends with `-0-<board>`
 
 ### Requirement: Kernel config revision from history
 

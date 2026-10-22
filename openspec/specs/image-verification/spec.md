@@ -479,7 +479,7 @@ as `obake-os` in `/etc/os-release`, that the login banner is
 `Welcome to obake-os`, that `VERSION` equals `/etc/obake/image-version`, that
 `VERSION_ID` is that version plus `-g<shortsha>`, `-g<shortsha>-dirty`, or
 `-gnogit`, that `PRETTY_NAME` is `obake-os` followed by `VERSION_ID`, and that
-`uname -r` ends with `-<board>-<rev>` for the board under test, where `<rev>`
+`uname -r` ends with `-<rev>-<board>` for the board under test, where `<rev>`
 is a positive integer. `uname -r` SHALL NOT contain an image git commit.
 
 #### Scenario: os-release and issue in guest
@@ -496,8 +496,9 @@ is a positive integer. `uname -r` SHALL NOT contain an image git commit.
 
 - **WHEN** the installed host has booted in QEMU and guest functional checks
   run
-- **THEN** the checks confirm `uname -r` ends with the board id under test
-  and a positive integer rev, and does not contain an image git short commit
+- **THEN** the checks confirm `uname -r` ends with `-<rev>-<board>` for the
+  board under test, where `<rev>` is a positive integer, and does not
+  contain an image git short commit
 
 ### Requirement: Writable media mount root checked after boot
 

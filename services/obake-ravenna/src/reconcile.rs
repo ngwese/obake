@@ -3,8 +3,9 @@
 
 //! Diff qualify results against loaded RTP modules and apply load/unload.
 
-use crate::pipewire_nodes::{ModuleArgs, PipewireClient};
+use crate::pipewire_nodes::{ModuleArgs, ModuleKind, PipewireClient};
 use crate::qualify::{QualifiedSink, QualifiedSource, StreamState};
+use log::info;
 use std::collections::HashMap;
 
 /// A stream that should have an active PipeWire RTP module.
@@ -48,6 +49,14 @@ pub fn reconcile(
         .collect();
 
     for name in &to_unload {
+        let kind = current
+            .get(name)
+            .map(|a| match a.kind {
+                ModuleKind::RtpSink => "source",
+                ModuleKind::RtpSource => "sink",
+            })
+            .unwrap_or("stream");
+        info!("pipewire: unloading {kind} module name={name}");
         client.unload_module(name)?;
         current.remove(name);
     }
@@ -57,6 +66,14 @@ pub fn reconcile(
             continue;
         }
         let args = desired_args(want, iface);
+        let kind = match args.kind {
+            ModuleKind::RtpSink => "source",
+            ModuleKind::RtpSource => "sink",
+        };
+        info!(
+            "pipewire: loading {kind} module name={name} rate={} ch={} fmt={} dst={}:{} iface={iface}",
+            args.rate, args.channels, args.audio_format, args.destination, args.port
+        );
         client.load_module(&args)?;
         current.insert(name.clone(), args);
     }

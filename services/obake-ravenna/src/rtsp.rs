@@ -1,12 +1,22 @@
 // SPDX-FileCopyrightText: Copyright 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-//! RTSP DESCRIBE path and a minimal in-process server for tests.
+//! RTSP DESCRIBE server for transmitting RAVENNA sources.
+//!
+//! Listens on [`RTSP_PORT`] and answers `OPTIONS` / `DESCRIBE` for
+//! `/by-name/<stream>` from the shared qualify snapshot. Does not implement
+//! SETUP/PLAY; peers only need SDP to join the multicast.
 
 use crate::qualify::{QualifiedSource, StreamState};
 use crate::sdp;
+use log::{debug, info, warn};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+
+/// TCP port advertised via mDNS and bound by the DESCRIBE listener.
+pub const RTSP_PORT: u16 = 8554;
 
 /// Path used for peers that DESCRIBE a source by configured name.
 pub fn by_name_path(stream: &str) -> String {
@@ -64,18 +74,160 @@ pub fn update_table(table: &SharedDescribeTable, states: &[StreamState]) {
     *table.lock().unwrap() = next;
 }
 
-/// Build a DESCRIBE response body, or None when the source is held down /
-/// unknown.
-pub fn describe_response(table: &DescribeTable, path: &str) -> Option<String> {
+/// Build a DESCRIBE 200 response, or None when the source is held down / unknown.
+pub fn describe_response(table: &DescribeTable, path: &str, cseq: u32) -> Option<String> {
     let body = table.describe(path)?;
     Some(format!(
         "RTSP/1.0 200 OK\r\n\
+CSeq: {cseq}\r\n\
 Content-Type: application/sdp\r\n\
 Content-Length: {}\r\n\
 \r\n\
 {body}",
         body.len()
     ))
+}
+
+/// Bind `0.0.0.0:RTSP_PORT` and serve DESCRIBE until the task is cancelled.
+pub async fn serve(table: SharedDescribeTable) -> Result<(), std::io::Error> {
+    let listener = TcpListener::bind(("0.0.0.0", RTSP_PORT)).await?;
+    info!("startup: RTSP DESCRIBE listening on 0.0.0.0:{RTSP_PORT}");
+    loop {
+        let (stream, peer) = listener.accept().await?;
+        debug!("rtsp: accept from {peer}");
+        let table = Arc::clone(&table);
+        tokio::spawn(async move {
+            if let Err(e) = handle_client(stream, &table).await {
+                debug!("rtsp: client {peer} ended: {e}");
+            }
+        });
+    }
+}
+
+async fn handle_client(
+    mut stream: TcpStream,
+    table: &SharedDescribeTable,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    loop {
+        let req = match read_request(&mut stream).await? {
+            Some(r) => r,
+            None => return Ok(()),
+        };
+        debug!("rtsp: {} {} CSeq={}", req.method, req.path, req.cseq);
+        let response = match req.method.as_str() {
+            "OPTIONS" => options_response(req.cseq),
+            "DESCRIBE" => {
+                let snapshot = table.lock().unwrap().clone();
+                match describe_response(&snapshot, &req.path, req.cseq) {
+                    Some(ok) => ok,
+                    None => {
+                        info!("rtsp: DESCRIBE {} -> 404", req.path);
+                        not_found_response(req.cseq)
+                    }
+                }
+            }
+            other => {
+                warn!("rtsp: unsupported method {other}");
+                method_not_allowed_response(req.cseq)
+            }
+        };
+        stream.write_all(response.as_bytes()).await?;
+        if req.method == "DESCRIBE" {
+            // One-shot DESCRIBE is enough for SDP retrieval; close after.
+            return Ok(());
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RtspRequest {
+    method: String,
+    /// Absolute path, e.g. `/by-name/obake-out-1`.
+    path: String,
+    cseq: u32,
+}
+
+async fn read_request(
+    stream: &mut TcpStream,
+) -> Result<Option<RtspRequest>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut buf = Vec::with_capacity(1024);
+    let mut tmp = [0u8; 512];
+    loop {
+        let n = stream.read(&mut tmp).await?;
+        if n == 0 {
+            return Ok(None);
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+            break;
+        }
+        if buf.len() > 16 * 1024 {
+            return Err("rtsp request too large".into());
+        }
+    }
+    let text = String::from_utf8_lossy(&buf);
+    Ok(Some(parse_request(&text)?))
+}
+
+fn parse_request(text: &str) -> Result<RtspRequest, Box<dyn std::error::Error + Send + Sync>> {
+    let mut lines = text.split("\r\n");
+    let request_line = lines.next().ok_or("empty RTSP request")?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().ok_or("missing method")?.to_string();
+    let uri = parts.next().ok_or("missing URI")?;
+    let path = uri_path(uri).ok_or("invalid RTSP URI")?.to_string();
+
+    let mut cseq = 1u32;
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        if let Some(rest) = line
+            .strip_prefix("CSeq:")
+            .or_else(|| line.strip_prefix("Cseq:"))
+        {
+            if let Ok(n) = rest.trim().parse() {
+                cseq = n;
+            }
+        }
+    }
+    Ok(RtspRequest { method, path, cseq })
+}
+
+/// Extract the absolute path from an RTSP request-URI.
+fn uri_path(uri: &str) -> Option<&str> {
+    if uri.starts_with('/') {
+        return Some(uri.split('?').next().unwrap_or(uri));
+    }
+    let rest = uri.strip_prefix("rtsp://")?;
+    let path = rest.find('/')?;
+    Some(rest[path..].split('?').next().unwrap_or(&rest[path..]))
+}
+
+fn options_response(cseq: u32) -> String {
+    format!(
+        "RTSP/1.0 200 OK\r\n\
+CSeq: {cseq}\r\n\
+Public: OPTIONS, DESCRIBE\r\n\
+\r\n"
+    )
+}
+
+fn not_found_response(cseq: u32) -> String {
+    format!(
+        "RTSP/1.0 404 Not Found\r\n\
+CSeq: {cseq}\r\n\
+\r\n"
+    )
+}
+
+fn method_not_allowed_response(cseq: u32) -> String {
+    format!(
+        "RTSP/1.0 405 Method Not Allowed\r\n\
+CSeq: {cseq}\r\n\
+Public: OPTIONS, DESCRIBE\r\n\
+\r\n"
+    )
 }
 
 #[cfg(test)]
@@ -106,10 +258,32 @@ mod tests {
     }
 
     #[test]
+    fn uri_path_from_absolute_and_full() {
+        assert_eq!(uri_path("/by-name/obake-out-1"), Some("/by-name/obake-out-1"));
+        assert_eq!(
+            uri_path("rtsp://bata.local:8554/by-name/obake-out-1"),
+            Some("/by-name/obake-out-1")
+        );
+    }
+
+    #[test]
+    fn parse_describe_extracts_cseq_and_path() {
+        let raw = "DESCRIBE rtsp://bata.local/by-name/obake-out-1 RTSP/1.0\r\n\
+CSeq: 7\r\n\
+Accept: application/sdp\r\n\
+\r\n";
+        let req = parse_request(raw).unwrap();
+        assert_eq!(req.method, "DESCRIBE");
+        assert_eq!(req.path, "/by-name/obake-out-1");
+        assert_eq!(req.cseq, 7);
+    }
+
+    #[test]
     fn describe_transmitting_source() {
         let table = DescribeTable::from_states(&[up_source()]);
-        let resp = describe_response(&table, "/by-name/obake-out-1").unwrap();
+        let resp = describe_response(&table, "/by-name/obake-out-1", 1).unwrap();
         assert!(resp.starts_with("RTSP/1.0 200 OK"));
+        assert!(resp.contains("CSeq: 1"));
         assert!(resp.contains("L24/48000/8"));
         assert!(resp.contains("239.69.1.10"));
     }
@@ -121,6 +295,6 @@ mod tests {
             reason: DownReason::Unlocked,
         }];
         let table = DescribeTable::from_states(&states);
-        assert!(describe_response(&table, "/by-name/obake-out-1").is_none());
+        assert!(describe_response(&table, "/by-name/obake-out-1", 1).is_none());
     }
 }

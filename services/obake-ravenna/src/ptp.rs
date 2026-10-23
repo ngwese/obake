@@ -6,6 +6,7 @@
 //! Speaks IEEE 1588 management TLVs in-process (same messages `pmc -u`
 //! would send). Never spawns a helper and never adjusts a clock.
 
+use log::debug;
 use std::io;
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
@@ -100,6 +101,22 @@ impl PortState {
     /// Whether this state counts as locked for stream qualification.
     pub fn is_locked(self) -> bool {
         matches!(self, PortState::Slave)
+    }
+
+    /// Stable name for logs (`SLAVE`, `LISTENING`, …).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PortState::Initializing => "INITIALIZING",
+            PortState::Faulty => "FAULTY",
+            PortState::Disabled => "DISABLED",
+            PortState::Listening => "LISTENING",
+            PortState::PreMaster => "PRE_MASTER",
+            PortState::Master => "MASTER",
+            PortState::Passive => "PASSIVE",
+            PortState::Uncalibrated => "UNCALIBRATED",
+            PortState::Slave => "SLAVE",
+            PortState::Unknown => "UNKNOWN",
+        }
     }
 }
 
@@ -234,6 +251,12 @@ impl PtpManagementClient {
     /// Does not connect yet; each query sendto/recvfrom the server.
     pub fn open(server: impl AsRef<Path>, client_path: impl AsRef<Path>) -> io::Result<Self> {
         let client_path = client_path.as_ref().to_path_buf();
+        let server = server.as_ref().to_path_buf();
+        debug!(
+            "ptp: opening management client server={} client={}",
+            server.display(),
+            client_path.display()
+        );
         let _ = std::fs::remove_file(&client_path);
         if let Some(parent) = client_path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -243,7 +266,7 @@ impl PtpManagementClient {
         sock.set_write_timeout(Some(Duration::from_millis(200)))?;
         Ok(Self {
             sock,
-            server: server.as_ref().to_path_buf(),
+            server,
             client_path,
             sequence: 1,
         })
@@ -264,6 +287,7 @@ impl PtpManagementClient {
     /// Send one GET and return the response TLV data payload.
     fn transact(&mut self, mgmt_id: u16) -> Result<Vec<u8>, String> {
         let seq = self.next_seq();
+        debug!("ptp: GET mid={mgmt_id:#x} seq={seq}");
         let req = build_get_request(mgmt_id, seq);
         self.sock
             .send_to(&req, &self.server)
@@ -274,6 +298,7 @@ impl PtpManagementClient {
         if id != mgmt_id {
             return Err(format!("expected mid {mgmt_id:#x}, got {id:#x}"));
         }
+        debug!("ptp: RESPONSE mid={id:#x} data_len={}", data.len());
         Ok(data.to_vec())
     }
 
@@ -281,21 +306,40 @@ impl PtpManagementClient {
     pub fn query_state(&mut self) -> PtpState {
         let port_data = match self.transact(MID_PORT_DATA_SET) {
             Ok(d) => d,
-            Err(_) => return PtpState::unlocked(),
+            Err(e) => {
+                debug!("ptp: PORT_DATA_SET failed: {e}; treating as unlocked");
+                return PtpState::unlocked();
+            }
         };
         let port_state = match parse_port_data_set(&port_data) {
             Ok(s) => s,
-            Err(_) => return PtpState::unlocked(),
+            Err(e) => {
+                debug!("ptp: parse PORT_DATA_SET failed: {e}; treating as unlocked");
+                return PtpState::unlocked();
+            }
         };
         let domain = match self.transact(MID_DOMAIN) {
-            Ok(d) => parse_domain_data(&d).unwrap_or(0),
-            Err(_) => 0,
+            Ok(d) => parse_domain_data(&d).unwrap_or_else(|e| {
+                debug!("ptp: parse DOMAIN failed: {e}; using domain 0");
+                0
+            }),
+            Err(e) => {
+                debug!("ptp: DOMAIN failed: {e}; using domain 0");
+                0
+            }
         };
-        PtpState {
+        let state = PtpState {
             locked: port_state.is_locked(),
             domain,
             port_state,
-        }
+        };
+        debug!(
+            "ptp: query result locked={} domain={} port_state={}",
+            state.locked,
+            state.domain,
+            state.port_state.as_str()
+        );
+        state
     }
 }
 

@@ -9,6 +9,9 @@ RAVENNA session daemon for the obake host. It browses and publishes RAVENNA
 RTSP services, serves and retrieves SDP, and loads PipeWire RTP modules on
 the existing `obake` graph while `ptp4l` reports a lock.
 
+The compiler is pinned to Rust 1.99.1 via `rust-toolchain.toml`. The qdl
+Buildroot package overrides `host-rust-bin` to the same version.
+
 ## Configuration
 
 Live file (seeded once on `qdl`):
@@ -63,6 +66,13 @@ so the same absolute sample counts as at 48000 Hz are accepted.
 ```
 obake-ravenna run
 obake-ravenna status
+```
+
+Logging uses `env_logger`. Default filter is `info` (also set on the user
+unit). For full traces including PTP TLVs, discovery, and each tick:
+
+```
+RUST_LOG=debug obake-ravenna run
 ```
 
 Reload the user service to re-read the config without restarting PipeWire.

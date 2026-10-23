@@ -97,6 +97,58 @@ pub enum StreamState {
     SinkDown { name: String, reason: DownReason },
 }
 
+impl StreamState {
+    /// Configured stream name.
+    pub fn name(&self) -> &str {
+        match self {
+            StreamState::SourceUp(s) => &s.name,
+            StreamState::SourceDown { name, .. } => name,
+            StreamState::SinkUp(s) => &s.name,
+            StreamState::SinkDown { name, .. } => name,
+        }
+    }
+
+    /// `"source"` or `"sink"`.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            StreamState::SourceUp(_) | StreamState::SourceDown { .. } => "source",
+            StreamState::SinkUp(_) | StreamState::SinkDown { .. } => "sink",
+        }
+    }
+
+    /// True when the stream may have an active PipeWire RTP node.
+    pub fn is_up(&self) -> bool {
+        matches!(
+            self,
+            StreamState::SourceUp(_) | StreamState::SinkUp(_)
+        )
+    }
+
+    /// Hold-down reason when down.
+    pub fn down_reason(&self) -> Option<DownReason> {
+        match self {
+            StreamState::SourceDown { reason, .. } | StreamState::SinkDown { reason, .. } => {
+                Some(*reason)
+            }
+            _ => None,
+        }
+    }
+
+    /// Compact status string for logs (`source foo up`, `sink bar down:unlocked`).
+    pub fn status_label(&self) -> String {
+        match self {
+            StreamState::SourceUp(s) => format!("source {} up", s.name),
+            StreamState::SourceDown { name, reason } => {
+                format!("source {name} down:{}", reason.as_str())
+            }
+            StreamState::SinkUp(s) => format!("sink {} up", s.name),
+            StreamState::SinkDown { name, reason } => {
+                format!("sink {name} down:{}", reason.as_str())
+            }
+        }
+    }
+}
+
 /// Inputs to the pure qualify step for one daemon tick.
 #[derive(Debug, Clone)]
 pub struct QualifyInput<'a> {

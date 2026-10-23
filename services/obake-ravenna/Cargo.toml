@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright 2026 Greg Wuller
+# SPDX-License-Identifier: MIT
+
+[package]
+name = "obake-ravenna"
+version = "0.1.0"
+edition = "2021"
+description = "RAVENNA session daemon for the obake PipeWire graph"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "obake-ravenna"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync", "time", "fs"] }
+bytes = "1"
+
+[dev-dependencies]
+tempfile = "3"

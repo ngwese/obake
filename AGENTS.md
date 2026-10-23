@@ -10,6 +10,7 @@ and portability of configurations between hosts via Singularity containerized
 workloads ("shapes").
 
 - `shapes/<name>/<name>.def` — Singularity definition files for each workload.
+- `services/<name>/` — host user-service daemons (Cargo crates) packaged into the image.
 - `image/` — the host OS image subsystem: layered image build (`image/os`),
   headless installer (`image/installer`), containerized build environment
   (`image/build`), QEMU verification (`image/verification`), host-level

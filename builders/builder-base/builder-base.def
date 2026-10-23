@@ -21,6 +21,7 @@ From: debian:trixie-slim
 		curl \
 		wget \
 		ca-certificates \
+		pkg-config \
 		python3 \
 		git \
 		xz-utils

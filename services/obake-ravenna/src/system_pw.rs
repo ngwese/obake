@@ -217,14 +217,23 @@ fn pw_thread(rx: pipewire::channel::Receiver<Cmd>, ready: mpsc::Sender<Result<()
                 return;
             }
         };
-        let context = match pw::context::ContextRc::new(&mainloop, None) {
+        // Context default application.name labels the RTP module's own
+        // pw_context_connect (it only passes remote.name). The session
+        // connect below overrides with [session].
+        let context_props = pw::properties::properties! {
+            *pw::keys::APP_NAME => "obake-ravenna [rtp]",
+        };
+        let context = match pw::context::ContextRc::new(&mainloop, Some(context_props)) {
             Ok(c) => c,
             Err(e) => {
                 let _ = ready.send(Err(format!("pipewire context: {e}")));
                 return;
             }
         };
-        let core = match context.connect_rc(None) {
+        let session_props = pw::properties::properties! {
+            *pw::keys::APP_NAME => "obake-ravenna [session]",
+        };
+        let core = match context.connect_rc(Some(session_props)) {
             Ok(c) => c,
             Err(e) => {
                 let _ = ready.send(Err(format!("pipewire connect: {e}")));

@@ -25,7 +25,9 @@ sudo apt install pkg-config libpipewire-0.3-dev libspa-0.2-dev libclang-dev
 
 `pkg-config` must resolve `libpipewire-0.3` and `libspa-0.2`. The qdl
 Buildroot package already depends on `obake-pipewire` and uses the staging
-sysroot; these packages are only needed when building on a developer machine.
+sysroot; `libclang` is still required on the *build* host because bindgen
+runs there. The containerized build env
+(`image/build/build-env`) installs `libclang-dev` and sets `LIBCLANG_PATH`.
 
 ## Configuration
 

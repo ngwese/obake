@@ -243,10 +243,13 @@ mod tests {
             channels: 8,
             format: Format::L24,
             frame_size: 48,
-            destination: MulticastDestination::parse("239.69.1.10:5004").unwrap(),
+            destination: MulticastDestination::parse("239.1.60.50:5004").unwrap(),
             ttl: 15,
             rate: 48_000,
             domain: 0,
+            gmid: [0x00, 0x1d, 0xc1, 0xff, 0xfe, 0x12, 0x34, 0x56],
+            payload_type: 104,
+            node_group: "obake.ravenna".into(),
         })
     }
 
@@ -285,7 +288,8 @@ Accept: application/sdp\r\n\
         assert!(resp.starts_with("RTSP/1.0 200 OK"));
         assert!(resp.contains("CSeq: 1"));
         assert!(resp.contains("L24/48000/8"));
-        assert!(resp.contains("239.69.1.10"));
+        assert!(resp.contains("239.1.60.50"));
+        assert!(resp.contains("RTP/AVP 104"));
     }
 
     #[test]

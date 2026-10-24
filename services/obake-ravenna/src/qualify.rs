@@ -3,8 +3,10 @@
 
 //! Pure stream up/down decisions from config, PTP lock, and discovered SDP.
 
-use crate::config::{Config, Format, SinkConfig, SourceConfig};
-use crate::destination::{resolve_ttl, MulticastDestination};
+use crate::config::{
+    payload_fits_mtu, Config, Format, SinkConfig, SourceConfig,
+};
+use crate::destination::MulticastDestination;
 use crate::frame_size;
 use crate::sdp::StreamSdp;
 use std::collections::HashMap;
@@ -15,21 +17,27 @@ use std::net::Ipv4Addr;
 pub enum DownReason {
     /// `ptp4l` is inactive or not in SLAVE.
     Unlocked,
-    /// Graph sample rate is not an AES67 / RAVENNA media clock rate.
+    /// No grandmaster clock identity from `ptp4l`.
+    NoGrandmaster,
+    /// Configured sample rate is not an AES67 / RAVENNA media clock rate.
     BadSampleRate,
-    /// Frame size is not an allowed packet time at the graph rate.
+    /// Frames per packet is not an allowed packet time at the rate.
     BadFrameSize,
     /// Destination failed multicast / port rules.
     BadDestination,
     /// Another local source uses the same group and port.
     DuplicateDestination,
+    /// Audio payload exceeds 1440 bytes (would need fragmentation).
+    PayloadTooLarge,
+    /// Payload type outside 96..=127.
+    BadPayloadType,
     /// `ptp4l` interface is missing or still a placeholder.
     InterfaceMissing,
     /// Sink's device/stream was not discovered.
     DeviceAbsent,
     /// Remote SDP connection address is not scoped multicast.
     UnicastSdp,
-    /// Remote SDP sample rate differs from the live graph.
+    /// Remote SDP sample rate differs from the configured graph rate.
     RateMismatch,
     /// Remote SDP PTP domain differs from local `ptp4l`.
     DomainMismatch,
@@ -40,10 +48,13 @@ impl DownReason {
     pub fn as_str(self) -> &'static str {
         match self {
             DownReason::Unlocked => "unlocked",
+            DownReason::NoGrandmaster => "no-grandmaster",
             DownReason::BadSampleRate => "bad-sample-rate",
             DownReason::BadFrameSize => "bad-frame-size",
             DownReason::BadDestination => "bad-destination",
             DownReason::DuplicateDestination => "duplicate-destination",
+            DownReason::PayloadTooLarge => "payload-too-large",
+            DownReason::BadPayloadType => "bad-payload-type",
             DownReason::InterfaceMissing => "interface-missing",
             DownReason::DeviceAbsent => "device-absent",
             DownReason::UnicastSdp => "unicast-sdp",
@@ -60,13 +71,20 @@ pub struct QualifiedSource {
     pub name: String,
     pub channels: u32,
     pub format: Format,
+    /// RTP frames per packet (from `[packet].frames`).
     pub frame_size: u32,
     pub destination: MulticastDestination,
     pub ttl: u8,
-    /// Live PipeWire graph sample rate (not from config).
+    /// Configured graph sample rate.
     pub rate: u32,
     /// Local `ptp4l` domain for SDP `ts-refclk`.
     pub domain: u8,
+    /// Grandmaster clock identity bytes (8) for SDP (non-zero).
+    pub gmid: [u8; 8],
+    /// RTP dynamic payload type (96..=127).
+    pub payload_type: u8,
+    /// PipeWire node group.
+    pub node_group: String,
 }
 
 /// A sink that passed all checks and may load an RTP source module.
@@ -80,8 +98,10 @@ pub struct QualifiedSink {
     pub stream: String,
     /// Remote stream description used for the join.
     pub sdp: StreamSdp,
-    /// Live graph rate (must equal `sdp.rate`).
+    /// Configured graph rate (must equal `sdp.rate`).
     pub rate: u32,
+    /// PipeWire node group.
+    pub node_group: String,
 }
 
 /// Per-stream result of [`qualify`]: transmit/receive or held down.
@@ -130,11 +150,11 @@ impl StreamState {
             StreamState::SourceDown { reason, .. } | StreamState::SinkDown { reason, .. } => {
                 Some(*reason)
             }
-            _ => None,
+            _ => None
         }
     }
 
-    /// Compact status string for logs (`source foo up`, `sink bar down:unlocked`).
+    /// Compact status string for logs.
     pub fn status_label(&self) -> String {
         match self {
             StreamState::SourceUp(s) => format!("source {} up", s.name),
@@ -154,12 +174,12 @@ impl StreamState {
 pub struct QualifyInput<'a> {
     /// Loaded on-disk configuration.
     pub config: &'a Config,
-    /// PipeWire graph `clock.rate`.
-    pub graph_rate: u32,
     /// True when `ptp4l` port state is SLAVE.
     pub locked: bool,
     /// Local PTP domain number.
     pub domain: u8,
+    /// Grandmaster identity from PARENT_DATA_SET (None if unknown/zero).
+    pub gmid: Option<[u8; 8]>,
     /// True when the `ptp4l` interface name exists as a netdev.
     pub interface_present: bool,
     /// Map of `(device, stream)` → SDP from DNS-SD / DESCRIBE.
@@ -169,22 +189,28 @@ pub struct QualifyInput<'a> {
 /// Decide up/down for every configured source and sink.
 pub fn qualify(input: &QualifyInput<'_>) -> Vec<StreamState> {
     let mut out = Vec::new();
+    let rate = input.config.graph.rate;
+    let frames = input.config.packet.frames;
+    let ttl = input.config.multicast_ttl();
 
     let mut dest_owners: HashMap<(Ipv4Addr, u16), Vec<usize>> = HashMap::new();
-    let mut parsed: Vec<Option<(SourceConfig, MulticastDestination, u8)>> =
+    let mut parsed: Vec<Option<(MulticastDestination, u8)>> =
         Vec::with_capacity(input.config.source.len());
 
     for (idx, src) in input.config.source.iter().enumerate() {
-        match MulticastDestination::parse(&src.destination) {
-            Ok(dest) => {
-                let ttl = resolve_ttl(src.ttl);
+        match (
+            input.config.resolve_source_destination(idx, src),
+            Config::resolve_payload(src),
+        ) {
+            (Ok(dest), Ok(pt)) => {
                 dest_owners
                     .entry((dest.group, dest.port))
                     .or_default()
                     .push(idx);
-                parsed.push(Some((src.clone(), dest, ttl)));
+                parsed.push(Some((dest, pt)));
             }
-            Err(_) => parsed.push(None),
+            (Err(_), _) => parsed.push(None),
+            (Ok(_), Err(_)) => parsed.push(None),
         }
     }
 
@@ -195,20 +221,24 @@ pub fn qualify(input: &QualifyInput<'_>) -> Vec<StreamState> {
         .collect();
 
     for (idx, src) in input.config.source.iter().enumerate() {
-        out.push(qualify_source(input, src, idx, &parsed, &duplicates));
+        out.push(qualify_source(
+            input, src, idx, rate, frames, ttl, &parsed, &duplicates,
+        ));
     }
     for sink in &input.config.sink {
-        out.push(qualify_sink(input, sink));
+        out.push(qualify_sink(input, sink, rate));
     }
     out
 }
 
-/// Qualify a single source against lock, interface, frame size, and destination.
 fn qualify_source(
     input: &QualifyInput<'_>,
     src: &SourceConfig,
     idx: usize,
-    parsed: &[Option<(SourceConfig, MulticastDestination, u8)>],
+    rate: u32,
+    frames: u32,
+    ttl: u8,
+    parsed: &[Option<(MulticastDestination, u8)>],
     duplicates: &std::collections::HashSet<usize>,
 ) -> StreamState {
     let down = |reason| StreamState::SourceDown {
@@ -219,17 +249,31 @@ fn qualify_source(
     if !input.locked {
         return down(DownReason::Unlocked);
     }
+    let Some(gmid) = input.gmid else {
+        return down(DownReason::NoGrandmaster);
+    };
+    if gmid == [0u8; 8] {
+        return down(DownReason::NoGrandmaster);
+    }
     if !input.interface_present {
         return down(DownReason::InterfaceMissing);
     }
-    if !frame_size::is_legal_rate(input.graph_rate) {
+    if !frame_size::is_legal_rate(rate) {
         return down(DownReason::BadSampleRate);
     }
-    if !frame_size::is_legal(src.frame_size, input.graph_rate) {
+    if !frame_size::is_legal(frames, rate) {
         return down(DownReason::BadFrameSize);
     }
-    let Some((_, dest, ttl)) = parsed[idx].clone() else {
-        return down(DownReason::BadDestination);
+    if !payload_fits_mtu(src.channels, frames, &src.format) {
+        return down(DownReason::PayloadTooLarge);
+    }
+
+    let Some((dest, payload_type)) = parsed[idx].clone() else {
+        // Distinguish destination vs payload failure.
+        if input.config.resolve_source_destination(idx, src).is_err() {
+            return down(DownReason::BadDestination);
+        }
+        return down(DownReason::BadPayloadType);
     };
     if duplicates.contains(&idx) {
         return down(DownReason::DuplicateDestination);
@@ -239,16 +283,18 @@ fn qualify_source(
         name: src.name.clone(),
         channels: src.channels,
         format: src.format.clone(),
-        frame_size: src.frame_size,
+        frame_size: frames,
         destination: dest,
         ttl,
-        rate: input.graph_rate,
+        rate,
         domain: input.domain,
+        gmid,
+        payload_type,
+        node_group: input.config.graph.node_group.clone(),
     })
 }
 
-/// Qualify a single sink against lock, discovery, and SDP constraints.
-fn qualify_sink(input: &QualifyInput<'_>, sink: &SinkConfig) -> StreamState {
+fn qualify_sink(input: &QualifyInput<'_>, sink: &SinkConfig, rate: u32) -> StreamState {
     let down = |reason| StreamState::SinkDown {
         name: sink.name.clone(),
         reason,
@@ -257,10 +303,13 @@ fn qualify_sink(input: &QualifyInput<'_>, sink: &SinkConfig) -> StreamState {
     if !input.locked {
         return down(DownReason::Unlocked);
     }
+    if input.gmid.is_none() || input.gmid == Some([0u8; 8]) {
+        return down(DownReason::NoGrandmaster);
+    }
     if !input.interface_present {
         return down(DownReason::InterfaceMissing);
     }
-    if !frame_size::is_legal_rate(input.graph_rate) {
+    if !frame_size::is_legal_rate(rate) {
         return down(DownReason::BadSampleRate);
     }
 
@@ -271,7 +320,7 @@ fn qualify_sink(input: &QualifyInput<'_>, sink: &SinkConfig) -> StreamState {
     if !sdp.group.is_multicast() || sdp.group.octets()[0] != 239 {
         return down(DownReason::UnicastSdp);
     }
-    if sdp.rate != input.graph_rate {
+    if sdp.rate != rate {
         return down(DownReason::RateMismatch);
     }
     if sdp.domain != input.domain {
@@ -283,25 +332,35 @@ fn qualify_sink(input: &QualifyInput<'_>, sink: &SinkConfig) -> StreamState {
         device: sink.device.clone(),
         stream: sink.stream.clone(),
         sdp: sdp.clone(),
-        rate: input.graph_rate,
+        rate,
+        node_group: input.config.graph.node_group.clone(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Format;
-    use std::net::Ipv4Addr;
+    use crate::config::{GraphConfig, MulticastConfig, PacketConfig};
 
     fn base_config() -> Config {
         Config {
+            graph: GraphConfig {
+                rate: 48_000,
+                node_group: "obake.ravenna".into(),
+            },
+            packet: PacketConfig { frames: 48 },
+            multicast: Some(MulticastConfig {
+                address: "239.1.60.50".into(),
+                base_port: 5004,
+                ttl: None,
+            }),
             source: vec![SourceConfig {
                 name: "obake-out-1".into(),
                 channels: 8,
                 format: Format::L24,
-                frame_size: 48,
-                destination: "239.69.1.10:5004".into(),
-                ttl: None,
+                payload: None,
+                address: None,
+                port: None,
             }],
             sink: vec![SinkConfig {
                 name: "obake-in-1".into(),
@@ -320,6 +379,25 @@ mod tests {
             format: Format::L24,
             frame_size: 48,
             domain: 0,
+            payload_type: 98,
+        }
+    }
+
+    fn gmid() -> [u8; 8] {
+        [0x00, 0x1d, 0xc1, 0xff, 0xfe, 0x12, 0x34, 0x56]
+    }
+
+    fn input<'a>(
+        cfg: &'a Config,
+        discovered: &'a HashMap<(String, String), StreamSdp>,
+    ) -> QualifyInput<'a> {
+        QualifyInput {
+            config: cfg,
+            locked: true,
+            domain: 0,
+            gmid: Some(gmid()),
+            interface_present: true,
+            discovered,
         }
     }
 
@@ -328,255 +406,147 @@ mod tests {
         let cfg = base_config();
         let mut discovered = HashMap::new();
         discovered.insert(("Studio-IO".into(), "PGM-1".into()), good_sdp());
-        let states = qualify(&QualifyInput {
-            config: &cfg,
-            graph_rate: 48_000,
-            locked: true,
-            domain: 0,
-            interface_present: true,
-            discovered: &discovered,
-        });
-        assert!(matches!(&states[0], StreamState::SourceUp(_)));
+        let states = qualify(&input(&cfg, &discovered));
+        match &states[0] {
+            StreamState::SourceUp(s) => {
+                assert_eq!(s.payload_type, 104);
+                assert_eq!(s.destination.port, 5004);
+                assert_eq!(s.gmid, gmid());
+            }
+            other => panic!("expected up, got {other:?}"),
+        }
         assert!(matches!(&states[1], StreamState::SinkUp(_)));
     }
 
     #[test]
-    fn sixty_four_samples_go_up() {
+    fn sixty_four_frames_eight_ch_l24_held_for_mtu() {
         let mut cfg = base_config();
-        cfg.source[0].frame_size = 64;
+        cfg.packet.frames = 64;
         let discovered = HashMap::new();
-        let states = qualify(&QualifyInput {
-            config: &cfg,
-            graph_rate: 48_000,
-            locked: true,
-            domain: 0,
-            interface_present: true,
-            discovered: &discovered,
-        });
+        let states = qualify(&input(&cfg, &discovered));
+        assert_eq!(
+            states[0],
+            StreamState::SourceDown {
+                name: "obake-out-1".into(),
+                reason: DownReason::PayloadTooLarge,
+            }
+        );
+    }
+
+    #[test]
+    fn sixty_four_frames_two_ch_goes_up() {
+        let mut cfg = base_config();
+        cfg.packet.frames = 64;
+        cfg.source[0].channels = 2;
+        let discovered = HashMap::new();
+        let states = qualify(&input(&cfg, &discovered));
         assert!(matches!(&states[0], StreamState::SourceUp(_)));
     }
 
     #[test]
-    fn forty_samples_held_down() {
+    fn forty_eight_frames_qualify_without_quantum_input() {
+        // Packet size is independent of the PipeWire quantum: qualify has
+        // no quantum field, so 48-frame packets go up regardless of a
+        // 128-sample graph cycle on the host.
+        let cfg = base_config();
+        let discovered = HashMap::new();
+        let states = qualify(&input(&cfg, &discovered));
+        assert!(matches!(&states[0], StreamState::SourceUp(s) if s.frame_size == 48));
+    }
+
+    #[test]
+    fn bad_payload_override_holds() {
         let mut cfg = base_config();
-        cfg.source[0].frame_size = 40;
+        cfg.source[0].payload = Some(95);
         let discovered = HashMap::new();
-        let states = qualify(&QualifyInput {
-            config: &cfg,
-            graph_rate: 48_000,
-            locked: true,
-            domain: 0,
-            interface_present: true,
-            discovered: &discovered,
-        });
+        let states = qualify(&input(&cfg, &discovered));
         assert_eq!(
-            states[0],
-            StreamState::SourceDown {
-                name: "obake-out-1".into(),
-                reason: DownReason::BadFrameSize,
-            }
+            states[0].down_reason(),
+            Some(DownReason::BadPayloadType)
         );
     }
 
     #[test]
-    fn unlocked_holds_source() {
+    fn missing_gmid_holds() {
         let cfg = base_config();
         let discovered = HashMap::new();
-        let states = qualify(&QualifyInput {
-            config: &cfg,
-            graph_rate: 48_000,
-            locked: false,
-            domain: 0,
-            interface_present: true,
-            discovered: &discovered,
-        });
+        let mut qi = input(&cfg, &discovered);
+        qi.gmid = None;
+        let states = qualify(&qi);
         assert_eq!(
-            states[0],
-            StreamState::SourceDown {
-                name: "obake-out-1".into(),
-                reason: DownReason::Unlocked,
-            }
+            states[0].down_reason(),
+            Some(DownReason::NoGrandmaster)
         );
     }
 
     #[test]
-    fn unicast_sdp_holds_sink() {
+    fn zero_gmid_holds() {
         let cfg = base_config();
-        let mut sdp = good_sdp();
-        sdp.group = Ipv4Addr::new(192, 168, 1, 10);
-        let mut discovered = HashMap::new();
-        discovered.insert(("Studio-IO".into(), "PGM-1".into()), sdp);
-        let states = qualify(&QualifyInput {
-            config: &cfg,
-            graph_rate: 48_000,
-            locked: true,
-            domain: 0,
-            interface_present: true,
-            discovered: &discovered,
-        });
-        assert_eq!(
-            states[1],
-            StreamState::SinkDown {
-                name: "obake-in-1".into(),
-                reason: DownReason::UnicastSdp,
-            }
-        );
-    }
-
-    #[test]
-    fn rate_mismatch_holds_sink() {
-        let cfg = base_config();
-        let mut sdp = good_sdp();
-        sdp.rate = 96_000;
-        let mut discovered = HashMap::new();
-        discovered.insert(("Studio-IO".into(), "PGM-1".into()), sdp);
-        let states = qualify(&QualifyInput {
-            config: &cfg,
-            graph_rate: 48_000,
-            locked: true,
-            domain: 0,
-            interface_present: true,
-            discovered: &discovered,
-        });
-        assert_eq!(
-            states[1],
-            StreamState::SinkDown {
-                name: "obake-in-1".into(),
-                reason: DownReason::RateMismatch,
-            }
-        );
-    }
-
-    #[test]
-    fn domain_mismatch_holds_sink() {
-        let cfg = base_config();
-        let mut sdp = good_sdp();
-        sdp.domain = 1;
-        let mut discovered = HashMap::new();
-        discovered.insert(("Studio-IO".into(), "PGM-1".into()), sdp);
-        let states = qualify(&QualifyInput {
-            config: &cfg,
-            graph_rate: 48_000,
-            locked: true,
-            domain: 0,
-            interface_present: true,
-            discovered: &discovered,
-        });
-        assert_eq!(
-            states[1],
-            StreamState::SinkDown {
-                name: "obake-in-1".into(),
-                reason: DownReason::DomainMismatch,
-            }
-        );
-    }
-
-    #[test]
-    fn duplicate_destinations_hold_both() {
-        let cfg = Config {
-            source: vec![
-                SourceConfig {
-                    name: "a".into(),
-                    channels: 2,
-                    format: Format::L16,
-                    frame_size: 48,
-                    destination: "239.69.1.10:5004".into(),
-                    ttl: None,
-                },
-                SourceConfig {
-                    name: "b".into(),
-                    channels: 2,
-                    format: Format::L16,
-                    frame_size: 48,
-                    destination: "239.69.1.10:5004".into(),
-                    ttl: None,
-                },
-            ],
-            sink: vec![],
-        };
         let discovered = HashMap::new();
-        let states = qualify(&QualifyInput {
-            config: &cfg,
-            graph_rate: 48_000,
-            locked: true,
-            domain: 0,
-            interface_present: true,
-            discovered: &discovered,
-        });
-        assert!(matches!(
-            states[0],
-            StreamState::SourceDown {
-                reason: DownReason::DuplicateDestination,
-                ..
-            }
-        ));
-        assert!(matches!(
-            states[1],
-            StreamState::SourceDown {
-                reason: DownReason::DuplicateDestination,
-                ..
-            }
-        ));
+        let mut qi = input(&cfg, &discovered);
+        qi.gmid = Some([0u8; 8]);
+        let states = qualify(&qi);
+        assert_eq!(
+            states[0].down_reason(),
+            Some(DownReason::NoGrandmaster)
+        );
     }
 
     #[test]
-    fn qualify_uses_supplied_graph_rate() {
+    fn forty_frames_held_down() {
         let mut cfg = base_config();
-        // 96 samples is 1 ms at 96 kHz.
-        cfg.source[0].frame_size = 96;
+        cfg.packet.frames = 40;
         let discovered = HashMap::new();
-        let states = qualify(&QualifyInput {
-            config: &cfg,
-            graph_rate: 96_000,
-            locked: true,
-            domain: 0,
-            interface_present: true,
-            discovered: &discovered,
+        let states = qualify(&input(&cfg, &discovered));
+        assert_eq!(
+            states[0].down_reason(),
+            Some(DownReason::BadFrameSize)
+        );
+    }
+
+    #[test]
+    fn stepped_ports_no_duplicate() {
+        let mut cfg = base_config();
+        cfg.source.push(SourceConfig {
+            name: "obake-out-2".into(),
+            channels: 2,
+            format: Format::L16,
+            payload: None,
+            address: None,
+            port: None,
         });
-        match &states[0] {
-            StreamState::SourceUp(s) => assert_eq!(s.rate, 96_000),
-            other => panic!("expected up, got {other:?}"),
+        let discovered = HashMap::new();
+        let states = qualify(&input(&cfg, &discovered));
+        match (&states[0], &states[1]) {
+            (StreamState::SourceUp(a), StreamState::SourceUp(b)) => {
+                assert_eq!(a.destination.port, 5004);
+                assert_eq!(b.destination.port, 5006);
+            }
+            other => panic!("expected both up, got {other:?}"),
         }
     }
 
     #[test]
-    fn forty_four_one_with_nominal_frame_goes_up() {
+    fn duplicate_pinned_ports_hold_both() {
         let mut cfg = base_config();
-        cfg.source[0].frame_size = 48;
-        let discovered = HashMap::new();
-        let states = qualify(&QualifyInput {
-            config: &cfg,
-            graph_rate: 44_100,
-            locked: true,
-            domain: 0,
-            interface_present: true,
-            discovered: &discovered,
+        cfg.source[0].port = Some(5004);
+        cfg.source.push(SourceConfig {
+            name: "b".into(),
+            channels: 2,
+            format: Format::L16,
+            payload: None,
+            address: None,
+            port: Some(5004),
         });
-        match &states[0] {
-            StreamState::SourceUp(s) => assert_eq!(s.rate, 44_100),
-            other => panic!("expected up, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn unsupported_graph_rate_holds_source() {
-        let mut cfg = base_config();
-        cfg.source[0].frame_size = 32;
         let discovered = HashMap::new();
-        let states = qualify(&QualifyInput {
-            config: &cfg,
-            graph_rate: 32_000,
-            locked: true,
-            domain: 0,
-            interface_present: true,
-            discovered: &discovered,
-        });
+        let states = qualify(&input(&cfg, &discovered));
         assert_eq!(
-            states[0],
-            StreamState::SourceDown {
-                name: "obake-out-1".into(),
-                reason: DownReason::BadSampleRate,
-            }
+            states[0].down_reason(),
+            Some(DownReason::DuplicateDestination)
+        );
+        assert_eq!(
+            states[1].down_reason(),
+            Some(DownReason::DuplicateDestination)
         );
     }
 }

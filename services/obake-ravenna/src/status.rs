@@ -99,6 +99,7 @@ mod tests {
             locked: false,
             domain: 0,
             port_state: PortState::Listening,
+            gmid: None,
         };
         let states = [StreamState::SourceDown {
             name: "obake-out-1".into(),
@@ -107,5 +108,28 @@ mod tests {
         let text = format_report(&build_report(&ptp, &states));
         assert!(text.contains("ptp: unlocked"));
         assert!(text.contains("source obake-out-1: held-down (unlocked)"));
+    }
+
+    #[test]
+    fn prints_mtu_and_payload_type_reasons() {
+        let ptp = PtpState {
+            locked: true,
+            domain: 0,
+            port_state: PortState::Slave,
+            gmid: Some([1, 2, 3, 4, 5, 6, 7, 8]),
+        };
+        let states = [
+            StreamState::SourceDown {
+                name: "wide".into(),
+                reason: DownReason::PayloadTooLarge,
+            },
+            StreamState::SourceDown {
+                name: "bad-pt".into(),
+                reason: DownReason::BadPayloadType,
+            },
+        ];
+        let text = format_report(&build_report(&ptp, &states));
+        assert!(text.contains("held-down (payload-too-large)"));
+        assert!(text.contains("held-down (bad-payload-type)"));
     }
 }

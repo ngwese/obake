@@ -11,10 +11,11 @@ use obake_ravenna::avahi::{
     RecordingAvahi, SystemAvahi,
 };
 use obake_ravenna::config::{Config, ConfigError};
-use obake_ravenna::pipewire_nodes::{ModuleArgs, PipewireClient, RecordingPipewire};
+use obake_ravenna::pipewire_nodes::{DriverArgs, ModuleArgs, PipewireClient, RecordingPipewire};
 use obake_ravenna::ptp::{interface_from_ptp4l_cfg, PtpManagementClient, PtpState};
 use obake_ravenna::qualify::{qualify, QualifyInput, StreamState};
-use obake_ravenna::reconcile::reconcile;
+use obake_ravenna::reconcile::{reconcile, reconcile_driver};
+use obake_ravenna::system_pw::SystemPipewire;
 use obake_ravenna::rtsp::{new_shared_table, serve as serve_rtsp, update_table, RTSP_PORT};
 use obake_ravenna::status::{build_report, format_report};
 use std::collections::{HashMap, HashSet};
@@ -132,11 +133,9 @@ async fn run_daemon(
         }
     });
 
-    // PipeWire load/unload is still a recording stub until bindings are
-    // wired. PTP lock is read in-process over the management UDS (no pmc
-    // spawn). Graph rate is fixed to the host-audio factory value until the
-    // PipeWire client can read clock.rate. mDNS uses system Avahi over D-Bus.
-    let mut pw = RecordingPipewire::new(48_000);
+    // PipeWire via libpipewire (`pipewire` crate) on the obake user socket;
+    // RecordingPipewire if connect fails. PTP lock is read in-process over
+    // the management UDS. Media rate comes from [graph].rate.
     let mut avahi: Box<dyn AvahiClient> = match SystemAvahi::connect().await {
         Ok(client) => Box::new(client),
         Err(e) => {
@@ -155,10 +154,17 @@ async fn run_daemon(
 
     let ptp_iface = load_ptp_interface(&ptp4l_config);
     let mut config = initial_stream_config(&config_path);
+    let mut pw: Box<dyn PipewireClient> = match SystemPipewire::connect(config.graph.rate) {
+        Ok(client) => Box::new(client),
+        Err(e) => {
+            warn!("pipewire: system client unavailable ({e}); using recording stub");
+            Box::new(RecordingPipewire::new(config.graph.rate))
+        }
+    };
     let mut reload_config = false;
     info!(
-        "startup: opening ptp4l management UDS (recording PipeWire graph_rate={})",
-        pw.graph_rate()
+        "startup: opening ptp4l management UDS (media rate={})",
+        config.graph.rate
     );
     let mut ptp_client = PtpManagementClient::open(&pmc_socket, &client_sock)?;
     let mut sighup = signal(SignalKind::hangup())?;
@@ -171,7 +177,7 @@ async fn run_daemon(
             reload_config,
             &ptp_iface,
             &mut ptp_client,
-            &mut pw,
+            pw.as_mut(),
             avahi.as_mut(),
             &mut current,
             &mut prev_states,
@@ -199,6 +205,10 @@ async fn run_daemon(
             }
         }
     }
+
+    info!("shutdown: removing Ravenna PipeWire objects");
+    let _ = reconcile(pw.as_mut(), "", &[], &mut current);
+    let _ = reconcile_driver(pw.as_mut(), None);
     Ok(())
 }
 
@@ -366,7 +376,7 @@ fn tick(
     reload_config: bool,
     ptp_iface: &PtpInterface,
     ptp_client: &mut PtpManagementClient,
-    pw: &mut RecordingPipewire,
+    pw: &mut dyn PipewireClient,
     avahi: &mut dyn AvahiClient,
     current: &mut HashMap<String, ModuleArgs>,
     prev_states: &mut Vec<StreamState>,
@@ -389,15 +399,18 @@ fn tick(
     if ptp.locked != prev_ptp.locked
         || ptp.domain != prev_ptp.domain
         || ptp.port_state != prev_ptp.port_state
+        || ptp.gmid != prev_ptp.gmid
     {
         info!(
-            "ptp: state change locked {} -> {} domain {} -> {} port_state {} -> {}",
+            "ptp: state change locked {} -> {} domain {} -> {} port_state {} -> {} gmid {:?} -> {:?}",
             prev_ptp.locked,
             ptp.locked,
             prev_ptp.domain,
             ptp.domain,
             prev_ptp.port_state.as_str(),
-            ptp.port_state.as_str()
+            ptp.port_state.as_str(),
+            prev_ptp.gmid,
+            ptp.gmid
         );
     }
     *prev_ptp = ptp;
@@ -413,13 +426,15 @@ fn tick(
     let discovered = HashMap::new();
     debug!("tick: discovery results count={}", discovered.len());
 
-    let graph_rate = pw.graph_rate();
-    debug!("tick: qualify graph_rate={graph_rate} locked={}", ptp.locked);
+    debug!(
+        "tick: qualify rate={} frames={} locked={} gmid={:?}",
+        config.graph.rate, config.packet.frames, ptp.locked, ptp.gmid
+    );
     let states = qualify(&QualifyInput {
         config,
-        graph_rate,
         locked: ptp.locked,
         domain: ptp.domain,
+        gmid: ptp.gmid,
         interface_present: ptp_iface.present,
         discovered: &discovered,
     });
@@ -428,12 +443,20 @@ fn tick(
     }
     log_stream_state_changes(prev_states, &states);
 
-    if let Some(name) = ptp_iface.name.as_deref() {
-        debug!("tick: reconcile on iface={name}");
-        reconcile(pw, name, &states, current)?;
+    // PTP driver while the interface exists; RTP nodes only when streams qualify.
+    if let Some(iface) = ptp_iface.name.as_deref().filter(|_| ptp_iface.present) {
+        let driver = DriverArgs {
+            name: "obake-ptp-driver".into(),
+            node_group: config.graph.node_group.clone(),
+            clock_interface: iface.to_string(),
+        };
+        reconcile_driver(pw, Some(&driver))?;
+        debug!("tick: reconcile streams on iface={iface}");
+        reconcile(pw, iface, &states, current)?;
     } else {
-        debug!("tick: no iface; unloading all modules");
+        debug!("tick: no iface; unloading streams and driver");
         reconcile(pw, "", &[], current)?;
+        reconcile_driver(pw, None)?;
     }
 
     sync_mdns_registration(

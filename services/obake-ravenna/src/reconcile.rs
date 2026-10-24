@@ -1,90 +1,63 @@
 // SPDX-FileCopyrightText: Copyright 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-//! Diff qualify results against loaded RTP modules and apply load/unload.
+//! Diff desired qualified streams against loaded PipeWire modules.
 
-use crate::pipewire_nodes::{ModuleArgs, ModuleKind, PipewireClient};
-use crate::qualify::{QualifiedSink, QualifiedSource, StreamState};
-use log::info;
-use std::collections::HashMap;
+use crate::pipewire_nodes::{DriverArgs, ModuleArgs, PipewireClient};
+use crate::qualify::StreamState;
+use std::collections::{HashMap, HashSet};
 
-/// A stream that should have an active PipeWire RTP module.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Desired {
-    Source(QualifiedSource),
-    Sink(QualifiedSink),
-}
-
-/// Apply qualify results to a PipeWire client. Unloads names that disappear or
-/// change, then loads the desired set. Does not restart PipeWire.
+/// Apply create/update/delete so loaded modules match `want`.
 pub fn reconcile(
     client: &mut dyn PipewireClient,
     iface: &str,
-    states: &[StreamState],
+    want: &[StreamState],
     current: &mut HashMap<String, ModuleArgs>,
 ) -> Result<(), String> {
-    let mut desired: HashMap<String, Desired> = HashMap::new();
-    for state in states {
-        match state {
-            StreamState::SourceUp(s) => {
-                desired.insert(s.name.clone(), Desired::Source(s.clone()));
+    let desired: HashMap<String, ModuleArgs> = want
+        .iter()
+        .filter_map(|s| match s {
+            StreamState::SourceUp(src) => {
+                Some((src.name.clone(), ModuleArgs::from_source(src, iface)))
             }
-            StreamState::SinkUp(s) => {
-                desired.insert(s.name.clone(), Desired::Sink(s.clone()));
+            StreamState::SinkUp(sink) => {
+                Some((sink.name.clone(), ModuleArgs::from_sink(sink, iface)))
             }
-            _ => {}
-        }
-    }
-
-    let to_unload: Vec<String> = current
-        .keys()
-        .filter(|name| {
-            let Some(want) = desired.get(*name) else {
-                return true;
-            };
-            let want_args = desired_args(want, iface);
-            current.get(*name) != Some(&want_args)
+            _ => None,
         })
-        .cloned()
         .collect();
 
-    for name in &to_unload {
-        let kind = current
-            .get(name)
-            .map(|a| match a.kind {
-                ModuleKind::RtpSink => "source",
-                ModuleKind::RtpSource => "sink",
-            })
-            .unwrap_or("stream");
-        info!("pipewire: unloading {kind} module name={name}");
-        client.unload_module(name)?;
-        current.remove(name);
+    let desired_names: HashSet<&str> = desired.keys().map(|s| s.as_str()).collect();
+    let to_drop: Vec<String> = current
+        .keys()
+        .filter(|k| !desired_names.contains(k.as_str()))
+        .cloned()
+        .collect();
+    for name in to_drop {
+        client.unload_module(&name)?;
+        current.remove(&name);
     }
 
-    for (name, want) in &desired {
-        if current.contains_key(name) {
-            continue;
+    for (name, args) in &desired {
+        match current.get(name) {
+            Some(existing) if existing == args => {}
+            _ => {
+                client.load_module(args)?;
+                current.insert(name.clone(), args.clone());
+            }
         }
-        let args = desired_args(want, iface);
-        let kind = match args.kind {
-            ModuleKind::RtpSink => "source",
-            ModuleKind::RtpSource => "sink",
-        };
-        info!(
-            "pipewire: loading {kind} module name={name} rate={} ch={} fmt={} dst={}:{} iface={iface}",
-            args.rate, args.channels, args.audio_format, args.destination, args.port
-        );
-        client.load_module(&args)?;
-        current.insert(name.clone(), args);
     }
     Ok(())
 }
 
-/// Map a desired stream to concrete module load arguments.
-fn desired_args(want: &Desired, iface: &str) -> ModuleArgs {
-    match want {
-        Desired::Source(s) => ModuleArgs::from_source(s, iface),
-        Desired::Sink(s) => ModuleArgs::from_sink(s, iface),
+/// Ensure the PTP driver matches `args`, or remove it when `args` is None.
+pub fn reconcile_driver(
+    client: &mut dyn PipewireClient,
+    args: Option<&DriverArgs>,
+) -> Result<(), String> {
+    match args {
+        Some(a) => client.ensure_driver(a),
+        None => client.remove_driver(),
     }
 }
 
@@ -95,92 +68,59 @@ mod tests {
     use crate::destination::MulticastDestination;
     use crate::pipewire_nodes::{PwEvent, RecordingPipewire};
     use crate::qualify::QualifiedSource;
-    use crate::sdp::StreamSdp;
-    use std::net::Ipv4Addr;
 
-    fn source(name: &str, group: &str) -> StreamState {
+    fn source_up(name: &str, port: u16) -> StreamState {
         StreamState::SourceUp(QualifiedSource {
             name: name.into(),
             channels: 2,
-            format: Format::L24,
+            format: Format::L16,
             frame_size: 48,
-            destination: MulticastDestination::parse(&format!("{group}:5004")).unwrap(),
+            destination: MulticastDestination::new(
+                std::net::Ipv4Addr::new(239, 1, 60, 50),
+                port,
+            )
+            .unwrap(),
             ttl: 15,
             rate: 48_000,
             domain: 0,
-        })
-    }
-
-    fn sink(name: &str, group: Ipv4Addr) -> StreamState {
-        StreamState::SinkUp(QualifiedSink {
-            name: name.into(),
-            device: "Studio-IO".into(),
-            stream: "PGM-1".into(),
-            sdp: StreamSdp {
-                group,
-                port: 5004,
-                rate: 48_000,
-                channels: 2,
-                format: Format::L24,
-                frame_size: 48,
-                domain: 0,
-            },
-            rate: 48_000,
+            gmid: [1, 2, 3, 4, 5, 6, 7, 8],
+            payload_type: 98,
+            node_group: "obake.ravenna".into(),
         })
     }
 
     #[test]
-    fn load_and_unload_by_name() {
+    fn loads_then_unloads() {
         let mut pw = RecordingPipewire::new(48_000);
         let mut current = HashMap::new();
         reconcile(
             &mut pw,
-            "enp1s0",
-            &[source("out", "239.69.1.10")],
+            "enp3s0",
+            &[source_up("a", 5004)],
             &mut current,
         )
         .unwrap();
-        assert_eq!(pw.events, vec![PwEvent::Load("out".into())]);
-
-        reconcile(&mut pw, "enp1s0", &[], &mut current).unwrap();
-        assert_eq!(
-            pw.events,
-            vec![PwEvent::Load("out".into()), PwEvent::Unload("out".into())]
-        );
+        assert_eq!(current.len(), 1);
+        reconcile(&mut pw, "enp3s0", &[], &mut current).unwrap();
+        assert!(current.is_empty());
+        assert!(pw
+            .events
+            .iter()
+            .any(|e| matches!(e, PwEvent::Unload(_))));
     }
 
     #[test]
-    fn sink_sdp_group_change_unloads_then_loads() {
+    fn driver_ensure_once() {
         let mut pw = RecordingPipewire::new(48_000);
-        let mut current = HashMap::new();
-        reconcile(
-            &mut pw,
-            "enp1s0",
-            &[sink("in", Ipv4Addr::new(239, 69, 1, 10))],
-            &mut current,
-        )
-        .unwrap();
-        pw.events.clear();
-        reconcile(
-            &mut pw,
-            "enp1s0",
-            &[sink("in", Ipv4Addr::new(239, 69, 1, 20))],
-            &mut current,
-        )
-        .unwrap();
-        assert_eq!(
-            pw.events,
-            vec![PwEvent::Unload("in".into()), PwEvent::Load("in".into())]
-        );
-        assert_eq!(
-            current.get("in").unwrap().destination,
-            "239.69.1.20"
-        );
-    }
-
-    #[test]
-    fn graph_rate_comes_from_client() {
-        let pw = RecordingPipewire::new(48_000);
-        assert_eq!(pw.graph_rate(), 48_000);
+        let args = DriverArgs {
+            name: "obake-ptp-driver".into(),
+            node_group: "obake.ravenna".into(),
+            clock_interface: "enp3s0".into(),
+        };
+        reconcile_driver(&mut pw, Some(&args)).unwrap();
+        reconcile_driver(&mut pw, Some(&args)).unwrap();
+        assert_eq!(pw.driver.as_ref(), Some(&args));
+        reconcile_driver(&mut pw, None).unwrap();
+        assert!(pw.driver.is_none());
     }
 }

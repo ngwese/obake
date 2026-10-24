@@ -26,6 +26,8 @@ pub struct StreamSdp {
     pub frame_size: u32,
     /// PTP domain from `a=ts-refclk`.
     pub domain: u8,
+    /// Dynamic payload type from `m=` / `a=rtpmap`.
+    pub payload_type: u8,
 }
 
 /// Failure parsing an SDP body.
@@ -51,21 +53,31 @@ pub enum SdpError {
     Invalid(String),
 }
 
+/// Format an 8-byte clock identity as uppercase hex with dashes.
+pub fn format_gmid(gmid: &[u8; 8]) -> String {
+    format!(
+        "{:02X}-{:02X}-{:02X}-{:02X}-{:02X}-{:02X}-{:02X}-{:02X}",
+        gmid[0], gmid[1], gmid[2], gmid[3], gmid[4], gmid[5], gmid[6], gmid[7]
+    )
+}
+
 /// Build the SDP body for a transmitting source.
 pub fn build_source_sdp(src: &QualifiedSource, session_name: &str) -> String {
     let ptime = frame_size::ptime_ms(src.frame_size, src.rate).unwrap_or(1.0);
     let encoding = src.format.as_str();
+    let gmid = format_gmid(&src.gmid);
+    let pt = src.payload_type;
     format!(
         "v=0\r\n\
 o=- 0 0 IN IP4 {group}\r\n\
 s={session}\r\n\
 c=IN IP4 {group}\r\n\
 t=0 0\r\n\
-m=audio {port} RTP/AVP 97\r\n\
-a=rtpmap:97 {encoding}/{rate}/{channels}\r\n\
+m=audio {port} RTP/AVP {pt}\r\n\
+a=rtpmap:{pt} {encoding}/{rate}/{channels}\r\n\
 a=ptime:{ptime}\r\n\
 a=framecount:{frame}\r\n\
-a=ts-refclk:ptp=IEEE1588-2008:00-00-00-00-00-00-00-00:{domain}\r\n\
+a=ts-refclk:ptp=IEEE1588-2008:{gmid}:{domain}\r\n\
 a=mediaclk:direct=0\r\n",
         group = src.destination.group,
         session = session_name,
@@ -76,6 +88,8 @@ a=mediaclk:direct=0\r\n",
         ptime = format_ptime(ptime),
         frame = src.frame_size,
         domain = src.domain,
+        gmid = gmid,
+        pt = pt,
     )
 }
 
@@ -101,6 +115,7 @@ pub fn parse_sdp(text: &str) -> Result<StreamSdp, SdpError> {
     let mut frame_size = None;
     let mut ptime = None;
     let mut domain = None;
+    let mut payload_type = None;
 
     for raw in text.lines() {
         let line = raw.trim().trim_end_matches('\r');
@@ -113,18 +128,26 @@ pub fn parse_sdp(text: &str) -> Result<StreamSdp, SdpError> {
                 .map_err(|_| SdpError::Invalid(line.to_string()))?;
             group = Some(addr);
         } else if let Some(rest) = line.strip_prefix("m=audio ") {
-            let p: u16 = rest
-                .split_whitespace()
-                .next()
-                .ok_or(SdpError::MissingPort)?
+            let parts: Vec<&str> = rest.split_whitespace().collect();
+            if parts.len() < 3 {
+                return Err(SdpError::MissingPort);
+            }
+            let p: u16 = parts[0]
                 .parse()
                 .map_err(|_| SdpError::Invalid(line.to_string()))?;
             port = Some(p);
+            if let Ok(pt) = parts[2].parse::<u8>() {
+                payload_type = Some(pt);
+            }
         } else if let Some(rest) = line.strip_prefix("a=rtpmap:") {
-            // 97 L24/48000/8
             let parts: Vec<&str> = rest.split_whitespace().collect();
             if parts.len() < 2 {
                 return Err(SdpError::Invalid(line.to_string()));
+            }
+            if payload_type.is_none() {
+                if let Ok(pt) = parts[0].parse::<u8>() {
+                    payload_type = Some(pt);
+                }
             }
             let map: Vec<&str> = parts[1].split('/').collect();
             if map.len() < 3 {
@@ -156,7 +179,6 @@ pub fn parse_sdp(text: &str) -> Result<StreamSdp, SdpError> {
                     .map_err(|_| SdpError::Invalid(line.to_string()))?,
             );
         } else if let Some(rest) = line.strip_prefix("a=ts-refclk:ptp=") {
-            // IEEE1588-2008:mac:domain
             let domain_str = rest.rsplit(':').next().unwrap_or("");
             domain = Some(
                 domain_str
@@ -172,6 +194,7 @@ pub fn parse_sdp(text: &str) -> Result<StreamSdp, SdpError> {
     let channels = channels.ok_or(SdpError::MissingRtpmap)?;
     let format = format.ok_or(SdpError::MissingRtpmap)?;
     let domain = domain.ok_or(SdpError::MissingDomain)?;
+    let payload_type = payload_type.unwrap_or(96);
 
     let frame_size = match (frame_size, ptime) {
         (Some(f), _) => f,
@@ -187,6 +210,7 @@ pub fn parse_sdp(text: &str) -> Result<StreamSdp, SdpError> {
         format,
         frame_size,
         domain,
+        payload_type,
     })
 }
 
@@ -202,10 +226,13 @@ mod tests {
             channels: 8,
             format: Format::L24,
             frame_size: 48,
-            destination: MulticastDestination::parse("239.69.1.10:5004").unwrap(),
+            destination: MulticastDestination::parse("239.1.60.50:5004").unwrap(),
             ttl: 15,
             rate: 48_000,
             domain: 0,
+            gmid: [0x00, 0x1d, 0xc1, 0xff, 0xfe, 0x12, 0x34, 0x56],
+            payload_type: 104,
+            node_group: "obake.ravenna".into(),
         }
     }
 
@@ -213,15 +240,25 @@ mod tests {
     fn round_trip_source_sdp() {
         let src = sample_source();
         let text = build_source_sdp(&src, "obake-out-1");
+        assert!(text.contains("a=ts-refclk:ptp=IEEE1588-2008:00-1D-C1-FF-FE-12-34-56:0"));
+        assert!(!text.contains("00-00-00-00-00-00-00-00"));
+        assert!(text.contains("m=audio 5004 RTP/AVP 104"));
+        assert!(text.contains("a=rtpmap:104 L24/48000/8"));
         let parsed = parse_sdp(&text).unwrap();
-        assert_eq!(parsed.group, Ipv4Addr::new(239, 69, 1, 10));
+        assert_eq!(parsed.group, Ipv4Addr::new(239, 1, 60, 50));
         assert_eq!(parsed.port, 5004);
         assert_eq!(parsed.rate, 48_000);
         assert_eq!(parsed.channels, 8);
         assert_eq!(parsed.format, Format::L24);
         assert_eq!(parsed.frame_size, 48);
         assert_eq!(parsed.domain, 0);
-        assert!(text.contains("a=ts-refclk:ptp=IEEE1588-2008:"));
-        assert!(text.contains(":0\r\n") || text.ends_with(":0\r\n") || text.contains(":0\n"));
+        assert_eq!(parsed.payload_type, 104);
+    }
+
+    #[test]
+    fn rejects_zero_gmid_in_builder_input_via_format() {
+        // Builder formats whatever it is given; qualify must refuse zeros.
+        let gmid = [0u8; 8];
+        assert_eq!(format_gmid(&gmid), "00-00-00-00-00-00-00-00");
     }
 }

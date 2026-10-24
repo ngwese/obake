@@ -20,6 +20,9 @@ const MGMT_ACTION_RESPONSE: u8 = 0x02;
 
 const MID_DOMAIN: u16 = 0x2007;
 const MID_PORT_DATA_SET: u16 = 0x2004;
+const MID_PARENT_DATA_SET: u16 = 0x2002;
+/// Offset of `grandmasterIdentity` in a packed IEEE 1588 parentDS.
+const PARENT_DS_GMID_OFF: usize = 24;
 
 const MGMT_PREFIX_LEN: usize = 48; // header + targetPortIdentity + hops/action
 const TLV_HEADER_LEN: usize = 6; // type + length + id
@@ -34,6 +37,8 @@ pub struct PtpState {
     pub domain: u8,
     /// Raw port state from PORT_DATA_SET.
     pub port_state: PortState,
+    /// Grandmaster clock identity from PARENT_DATA_SET, if known and non-zero.
+    pub gmid: Option<[u8; 8]>,
 }
 
 impl PtpState {
@@ -43,6 +48,7 @@ impl PtpState {
             locked: false,
             domain: 0,
             port_state: PortState::Unknown,
+            gmid: None,
         }
     }
 }
@@ -222,6 +228,19 @@ pub fn parse_domain_data(data: &[u8]) -> Result<u8, String> {
     Ok(data[0])
 }
 
+/// Extract `grandmasterIdentity` from a PARENT_DATA_SET TLV payload.
+pub fn parse_parent_data_set(data: &[u8]) -> Result<[u8; 8], String> {
+    if data.len() < PARENT_DS_GMID_OFF + 8 {
+        return Err("PARENT_DATA_SET data too short".into());
+    }
+    let mut gmid = [0u8; 8];
+    gmid.copy_from_slice(&data[PARENT_DS_GMID_OFF..PARENT_DS_GMID_OFF + 8]);
+    if gmid == [0u8; 8] {
+        return Err("grandmasterIdentity is all zeros".into());
+    }
+    Ok(gmid)
+}
+
 /// Build portDS-sized payload with the given port state (zeros elsewhere).
 pub fn fixture_port_data_set(port_state: PortState) -> [u8; 26] {
     let mut data = [0u8; 26];
@@ -232,6 +251,13 @@ pub fn fixture_port_data_set(port_state: PortState) -> [u8; 26] {
 /// DOMAIN TLV payload for unit-test responses.
 pub fn fixture_domain_data(domain: u8) -> [u8; 2] {
     [domain, 0]
+}
+
+/// PARENT_DATA_SET-sized fixture with the given grandmaster identity.
+pub fn fixture_parent_data_set(gmid: [u8; 8]) -> [u8; 32] {
+    let mut data = [0u8; 32];
+    data[PARENT_DS_GMID_OFF..PARENT_DS_GMID_OFF + 8].copy_from_slice(&gmid);
+    data
 }
 
 /// Persistent UDS client for `ptp4l`'s read-only management socket.
@@ -302,7 +328,8 @@ impl PtpManagementClient {
         Ok(data.to_vec())
     }
 
-    /// Query PORT_DATA_SET and DOMAIN. On any I/O or parse failure, unlocked.
+    /// Query PORT_DATA_SET, DOMAIN, and PARENT_DATA_SET.
+    /// On PORT_DATA_SET failure, unlocked with no GMID.
     pub fn query_state(&mut self) -> PtpState {
         let port_data = match self.transact(MID_PORT_DATA_SET) {
             Ok(d) => d,
@@ -328,16 +355,31 @@ impl PtpManagementClient {
                 0
             }
         };
+        let gmid = match self.transact(MID_PARENT_DATA_SET) {
+            Ok(d) => match parse_parent_data_set(&d) {
+                Ok(id) => Some(id),
+                Err(e) => {
+                    debug!("ptp: parse PARENT_DATA_SET failed: {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                debug!("ptp: PARENT_DATA_SET failed: {e}");
+                None
+            }
+        };
         let state = PtpState {
             locked: port_state.is_locked(),
             domain,
             port_state,
+            gmid,
         };
         debug!(
-            "ptp: query result locked={} domain={} port_state={}",
+            "ptp: query result locked={} domain={} port_state={} gmid={:?}",
             state.locked,
             state.domain,
-            state.port_state.as_str()
+            state.port_state.as_str(),
+            state.gmid
         );
         state
     }
@@ -385,6 +427,7 @@ pub fn parse_pmc_reply(text: &str) -> PtpState {
         locked: port_state.is_locked(),
         domain,
         port_state,
+        gmid: None,
     }
 }
 
@@ -427,6 +470,17 @@ mod tests {
     }
 
     #[test]
+    fn binary_parent_gmid() {
+        let gmid = [0x00, 0x1d, 0xc1, 0xff, 0xfe, 0x12, 0x34, 0x56];
+        let data = fixture_parent_data_set(gmid);
+        let msg = build_response(MID_PARENT_DATA_SET, 4, &data);
+        let (id, payload) = parse_management_response(&msg).unwrap();
+        assert_eq!(id, MID_PARENT_DATA_SET);
+        assert_eq!(parse_parent_data_set(payload).unwrap(), gmid);
+        assert!(parse_parent_data_set(&fixture_parent_data_set([0u8; 8])).is_err());
+    }
+
+    #[test]
     fn get_request_has_expected_mid() {
         let req = build_get_request(MID_PORT_DATA_SET, 7);
         assert_eq!(req.len(), GET_REQUEST_LEN);
@@ -444,19 +498,22 @@ mod tests {
         let client_path = dir.path().join("client.pmc");
         let server = UnixDatagram::bind(&server_path).unwrap();
 
+        let gmid = [0x00, 0x1d, 0xc1, 0xff, 0xfe, 0x12, 0x34, 0x56];
         let done = Arc::new(Mutex::new(false));
         let done_flag = Arc::clone(&done);
         let server_thread = thread::spawn(move || {
             let mut buf = [0u8; 512];
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let (n, src) = server.recv_from(&mut buf).unwrap();
                 let _ = n;
                 let id = u16::from_be_bytes([buf[52], buf[53]]);
                 let seq = u16::from_be_bytes([buf[30], buf[31]]);
                 let resp = if id == MID_PORT_DATA_SET {
                     build_response(id, seq, &fixture_port_data_set(PortState::Slave))
-                } else {
+                } else if id == MID_DOMAIN {
                     build_response(id, seq, &fixture_domain_data(0))
+                } else {
+                    build_response(id, seq, &fixture_parent_data_set(gmid))
                 };
                 let peer = src.as_pathname().expect("named client socket");
                 server.send_to(&resp, peer).unwrap();
@@ -469,6 +526,7 @@ mod tests {
         assert!(st.locked);
         assert_eq!(st.port_state, PortState::Slave);
         assert_eq!(st.domain, 0);
+        assert_eq!(st.gmid, Some(gmid));
 
         server_thread.join().unwrap();
         assert!(*done.lock().unwrap());

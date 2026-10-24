@@ -70,6 +70,8 @@ pub struct PublishRequest {
     pub port: u16,
     /// Avahi interface index to publish on (from the `ptp4l` netdev).
     pub interface_index: i32,
+    /// DNS-SD TXT records (`key=value` bytes). Empty for node; session has path.
+    pub txt: Vec<Vec<u8>>,
 }
 
 /// Parameters for browsing peer RAVENNA RTSP services.
@@ -88,16 +90,21 @@ pub fn publish_ravenna_node(name: &str, port: u16, interface_index: i32) -> Publ
         kind: PublishKind::Node,
         port,
         interface_index,
+        txt: Vec::new(),
     }
 }
 
 /// Build a session publish call for a transmitting source stream.
+///
+/// TXT includes `path=/by-name/<name>` so Merging/Anubis can fill RTSP HOST.
 pub fn publish_ravenna_session(name: &str, port: u16, interface_index: i32) -> PublishRequest {
+    let path = format!("path=/by-name/{name}");
     PublishRequest {
         name: name.to_string(),
         kind: PublishKind::Session,
         port,
         interface_index,
+        txt: vec![path.into_bytes()],
     }
 }
 
@@ -238,8 +245,8 @@ impl SystemAvahi {
 
         let group = self.entry_group_new().await?;
         let subtype = req.kind.subtype();
-        // Empty TXT array: Avahi still emits the mandatory empty TXT record.
-        let txt: Vec<Vec<u8>> = Vec::new();
+        // Empty TXT still emits the mandatory empty record for node publishes.
+        let txt = req.txt.clone();
 
         let add_result = async {
             self.conn
@@ -353,9 +360,22 @@ mod tests {
 
     #[test]
     fn session_publish_uses_ravenna_session_subtype() {
+        // Live Anubis / Merging sessions on the AES67 segment advertise an
+        // empty TXT. We still publish path=/by-name/<stream> so peers that
+        // read it can fill RTSP HOST (blank HOST was the board symptom).
         let req = publish_ravenna_session("obake-out-1", 8554, 3);
         assert_eq!(req.kind, PublishKind::Session);
         assert_eq!(req.kind.subtype(), RAVENNA_SESSION_SERVICE_TYPE);
+        assert_eq!(
+            req.txt,
+            vec![b"path=/by-name/obake-out-1".to_vec()]
+        );
+    }
+
+    #[test]
+    fn node_publish_has_empty_txt() {
+        let req = publish_ravenna_node("bata", 8554, 3);
+        assert!(req.txt.is_empty());
     }
 
     #[test]

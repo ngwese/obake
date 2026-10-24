@@ -30,7 +30,10 @@ const RTSP_SERVICE_TYPE: &str = "_rtsp._tcp";
 const AVAHI_DEST: &str = "org.freedesktop.Avahi";
 const SERVER_IFACE: &str = "org.freedesktop.Avahi.Server";
 const GROUP_IFACE: &str = "org.freedesktop.Avahi.EntryGroup";
-const PROTO_UNSPEC: i32 = -1;
+/// Avahi `AVAHI_PROTO_INET`. The AES67 NIC is IPv4-only; `PROTO_UNSPEC`
+/// also announces an IPv6 SRV that never resolves, and Anubis then leaves
+/// RTSP HOST blank (no DESCRIBE, no clock domain).
+const PROTO_INET: i32 = 0;
 
 /// Kind of RAVENNA DNS-SD registration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,7 +260,7 @@ impl SystemAvahi {
                     "AddService",
                     &(
                         req.interface_index,
-                        PROTO_UNSPEC,
+                        PROTO_INET,
                         0u32,
                         req.name.as_str(),
                         RTSP_SERVICE_TYPE,
@@ -278,7 +281,7 @@ impl SystemAvahi {
                     "AddServiceSubtype",
                     &(
                         req.interface_index,
-                        PROTO_UNSPEC,
+                        PROTO_INET,
                         0u32,
                         req.name.as_str(),
                         RTSP_SERVICE_TYPE,

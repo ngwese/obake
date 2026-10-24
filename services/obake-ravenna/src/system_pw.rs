@@ -4,9 +4,13 @@
 //! Production PipeWire client for the `obake` user daemon.
 //!
 //! Uses the [`pipewire`] crate (`libpipewire`) on a dedicated mainloop thread.
-//! RTP modules are loaded into this process's context (they export nodes to the
-//! daemon). The PTP driver is created as a remote `spa-node-factory` object so
-//! it runs in the daemon and can own the graph clock.
+//! RTP modules are loaded into this process's context (they export streams to
+//! the daemon). The mainloop must keep running for those streams to stay
+//! connected — commands arrive via [`pipewire::channel`], not a blocking
+//! `mpsc::recv` that starves the loop.
+//!
+//! The PTP driver is created as a remote `spa-node-factory` object so it runs
+//! in the daemon and can own the graph clock.
 //!
 //! Unit tests use [`crate::pipewire_nodes::RecordingPipewire`] and never start
 //! this client.
@@ -105,7 +109,6 @@ pub fn driver_object_args(args: &DriverArgs) -> String {
             priority.driver = 100000\n\
             clock.interface = \"{iface}\"\n\
             resync.ms       = 1.5\n\
-            object.linger   = true\n\
         }}",
         name = args.name,
         group = args.node_group,
@@ -124,14 +127,14 @@ enum Cmd {
 /// Live client: libpipewire mainloop thread + command channel.
 pub struct SystemPipewire {
     rate: u32,
-    tx: mpsc::Sender<Cmd>,
+    tx: pipewire::channel::Sender<Cmd>,
     join: Option<thread::JoinHandle<()>>,
 }
 
 impl SystemPipewire {
     /// Connect to the `obake` user PipeWire socket (`PIPEWIRE_RUNTIME_DIR`).
     pub fn connect(rate: u32) -> Result<Self, String> {
-        let (tx, rx) = mpsc::channel::<Cmd>();
+        let (tx, rx) = pipewire::channel::channel::<Cmd>();
         let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
         let join = thread::Builder::new()
             .name("obake-ravenna-pw".into())
@@ -196,101 +199,148 @@ impl PipewireClient for SystemPipewire {
     }
 }
 
-fn pw_thread(rx: mpsc::Receiver<Cmd>, ready: mpsc::Sender<Result<(), String>>) {
+fn pw_thread(rx: pipewire::channel::Receiver<Cmd>, ready: mpsc::Sender<Result<(), String>>) {
     use pipewire as pw;
-    use std::cell::Cell;
+    use pipewire::loop_::Timeout;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     pw::init();
 
-    let mainloop = match pw::main_loop::MainLoopRc::new(None) {
-        Ok(m) => m,
-        Err(e) => {
-            let _ = ready.send(Err(format!("pipewire mainloop: {e}")));
+    // All PipeWire objects must be dropped before `pw_deinit`, or Ctrl-C
+    // teardown SEGVs after deleting streams/driver.
+    {
+        let mainloop = match pw::main_loop::MainLoopRc::new(None) {
+            Ok(m) => m,
+            Err(e) => {
+                let _ = ready.send(Err(format!("pipewire mainloop: {e}")));
+                return;
+            }
+        };
+        let context = match pw::context::ContextRc::new(&mainloop, None) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = ready.send(Err(format!("pipewire context: {e}")));
+                return;
+            }
+        };
+        let core = match context.connect_rc(None) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = ready.send(Err(format!("pipewire connect: {e}")));
+                return;
+            }
+        };
+
+        if let Err(e) = roundtrip(&mainloop, &core) {
+            let _ = ready.send(Err(format!("pipewire sync: {e}")));
             return;
         }
-    };
-    let context = match pw::context::ContextRc::new(&mainloop, None) {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = ready.send(Err(format!("pipewire context: {e}")));
-            return;
+
+        let driver: Rc<RefCell<Option<pw::node::Node>>> = Rc::new(RefCell::new(None));
+        let driver_args: Rc<RefCell<Option<DriverArgs>>> = Rc::new(RefCell::new(None));
+        let modules: Rc<RefCell<HashMap<String, *mut c_void>>> =
+            Rc::new(RefCell::new(HashMap::new()));
+
+        let mainloop_quit = mainloop.clone();
+        let core_cmd = core.clone();
+        let context_cmd = context.clone();
+        let driver_cmd = driver.clone();
+        let driver_args_cmd = driver_args.clone();
+        let modules_cmd = modules.clone();
+
+        // Keep this attached for the lifetime of mainloop.run().
+        let _attached = rx.attach(mainloop.loop_(), move |cmd| {
+            match cmd {
+                // Only quit here. Destroy leftovers after run() returns so we
+                // are not nested inside this IO callback, then drop objects
+                // before pw_deinit.
+                Cmd::Shutdown => {
+                    mainloop_quit.quit();
+                }
+                Cmd::EnsureDriver(args, reply) => {
+                    let r = ensure_driver(
+                        &mainloop_quit,
+                        &core_cmd,
+                        &mut driver_cmd.borrow_mut(),
+                        &mut driver_args_cmd.borrow_mut(),
+                        &args,
+                    );
+                    let _ = reply.send(r);
+                }
+                Cmd::RemoveDriver(reply) => {
+                    let r = remove_driver(
+                        &mainloop_quit,
+                        &core_cmd,
+                        &mut driver_cmd.borrow_mut(),
+                        &mut driver_args_cmd.borrow_mut(),
+                    );
+                    let _ = reply.send(r);
+                }
+                Cmd::Load(args, reply) => {
+                    let r = load_module(
+                        &mainloop_quit,
+                        &core_cmd,
+                        &context_cmd,
+                        &mut modules_cmd.borrow_mut(),
+                        &args,
+                    );
+                    let _ = reply.send(r);
+                }
+                Cmd::Unload(name, reply) => {
+                    let r = unload_module(
+                        &mainloop_quit,
+                        &core_cmd,
+                        &mut modules_cmd.borrow_mut(),
+                        &name,
+                    );
+                    let _ = reply.send(r);
+                }
+            }
+        });
+
+        let _ = ready.send(Ok(()));
+        mainloop.run();
+
+        // run() returned (Shutdown). Clear any objects still held, then let
+        // the block end so proxies/context/loop drop before deinit.
+        let names: Vec<String> = modules.borrow().keys().cloned().collect();
+        for name in names {
+            let _ = unload_module(&mainloop, &core, &mut modules.borrow_mut(), &name);
         }
-    };
-    let core = match context.connect_rc(None) {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = ready.send(Err(format!("pipewire connect: {e}")));
-            return;
-        }
-    };
-
-    if let Err(e) = roundtrip(&mainloop, &core) {
-        let _ = ready.send(Err(format!("pipewire sync: {e}")));
-        return;
-    }
-    let _ = ready.send(Ok(()));
-
-    let mut driver: Option<pw::node::Node> = None;
-    let mut driver_args: Option<DriverArgs> = None;
-    let mut modules: HashMap<String, *mut c_void> = HashMap::new();
-
-    while let Ok(cmd) = rx.recv() {
-        match cmd {
-            Cmd::Shutdown => break,
-            Cmd::EnsureDriver(args, reply) => {
-                let r = ensure_driver(
-                    &mainloop,
-                    &core,
-                    &mut driver,
-                    &mut driver_args,
-                    &args,
-                );
-                let _ = reply.send(r);
-            }
-            Cmd::RemoveDriver(reply) => {
-                let r = remove_driver(&mainloop, &core, &mut driver, &mut driver_args);
-                let _ = reply.send(r);
-            }
-            Cmd::Load(args, reply) => {
-                let r = load_module(&mainloop, &core, &context, &mut modules, &args);
-                let _ = reply.send(r);
-            }
-            Cmd::Unload(name, reply) => {
-                let r = unload_module(&mainloop, &core, &mut modules, &name);
-                let _ = reply.send(r);
-            }
-        }
+        let _ = remove_driver(
+            &mainloop,
+            &core,
+            &mut driver.borrow_mut(),
+            &mut driver_args.borrow_mut(),
+        );
     }
 
-    let names: Vec<String> = modules.keys().cloned().collect();
-    for name in names {
-        let _ = unload_module(&mainloop, &core, &mut modules, &name);
-    }
-    let _ = remove_driver(&mainloop, &core, &mut driver, &mut driver_args);
     unsafe {
         pw::deinit();
     }
 
+    /// Drain the loop until a core sync completes.
+    ///
+    /// Safe before `mainloop.run()` and from an attached command callback
+    /// (nested `iterate` while already inside `run`).
     fn roundtrip(
         mainloop: &pw::main_loop::MainLoopRc,
         core: &pw::core::CoreRc,
     ) -> Result<(), String> {
         let done = Rc::new(Cell::new(false));
         let done_clone = done.clone();
-        let loop_clone = mainloop.clone();
         let pending = core.sync(0).map_err(|e| format!("sync: {e}"))?;
         let _listener = core
             .add_listener_local()
             .done(move |id, seq| {
                 if id == pw::core::PW_ID_CORE && seq == pending {
                     done_clone.set(true);
-                    loop_clone.quit();
                 }
             })
             .register();
         while !done.get() {
-            mainloop.run();
+            mainloop.loop_().iterate(Timeout::Infinite);
         }
         Ok(())
     }
@@ -321,7 +371,6 @@ fn pw_thread(rx: mpsc::Receiver<Cmd>, ready: mpsc::Sender<Result<(), String>>) {
             "priority.driver" => "100000",
             "clock.interface" => &*args.clock_interface,
             "resync.ms" => "1.5",
-            "object.linger" => "true",
         };
         let node = core
             .create_object::<pw::node::Node>("spa-node-factory", &props)
@@ -443,7 +492,7 @@ mod tests {
     }
 
     #[test]
-    fn driver_args_omit_export_and_quantum() {
+    fn driver_args_omit_export_linger_and_quantum() {
         let args = DriverArgs {
             name: "obake-ptp-driver".into(),
             node_group: "obake.ravenna".into(),
@@ -453,6 +502,7 @@ mod tests {
         assert!(spa.contains("support.node.driver"));
         assert!(spa.contains("clock.interface = \"enp3s0\""));
         assert!(!spa.contains("object.export"));
+        assert!(!spa.contains("object.linger"));
         assert!(!spa.contains("clock.force-quantum"));
     }
 }

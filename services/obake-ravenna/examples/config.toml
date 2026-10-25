@@ -9,7 +9,7 @@
 rate = 48000
 node_group = "obake.ravenna"
 
-# Continuous SLAVE dwell before sources/sinks come up (ms). Default 2000;
+# Continuous FOLLOWER dwell before sources/sinks come up (ms). Default 2000;
 # set 0 for immediate bring-up on lock.
 # [ptp]
 # lock_hold_ms = 2000

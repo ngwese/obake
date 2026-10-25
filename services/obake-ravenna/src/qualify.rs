@@ -15,7 +15,7 @@ use std::net::Ipv4Addr;
 /// Why a configured stream is down (shown by `status`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DownReason {
-    /// `ptp4l` is inactive or not in SLAVE.
+    /// `ptp4l` is inactive or not in FOLLOWER.
     Unlocked,
     /// Locked, but the configured continuous lock-hold has not elapsed.
     LockHold,
@@ -179,9 +179,9 @@ impl StreamState {
 pub struct QualifyInput<'a> {
     /// Loaded on-disk configuration.
     pub config: &'a Config,
-    /// True when `ptp4l` port state is SLAVE.
+    /// True when `ptp4l` port state is FOLLOWER.
     pub locked: bool,
-    /// True when SLAVE has been continuous for the configured lock-hold.
+    /// True when FOLLOWER has been continuous for the configured lock-hold.
     pub lock_hold_satisfied: bool,
     /// Local PTP domain number.
     pub domain: u8,

@@ -9,7 +9,7 @@ use crate::qualify::{DownReason, StreamState};
 /// Snapshot of PTP lock and every configured stream's up/down state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusReport {
-    /// Whether `ptp4l` reports SLAVE (locked).
+    /// Whether `ptp4l` reports FOLLOWER (locked).
     pub locked: bool,
     /// Local PTP domain number.
     pub domain: u8,
@@ -115,7 +115,7 @@ mod tests {
         let ptp = PtpState {
             locked: true,
             domain: 0,
-            port_state: PortState::Slave,
+            port_state: PortState::Follower,
             gmid: Some([1, 2, 3, 4, 5, 6, 7, 8]),
         };
         let states = [StreamState::SourceDown {
@@ -133,7 +133,7 @@ mod tests {
         let ptp = PtpState {
             locked: true,
             domain: 0,
-            port_state: PortState::Slave,
+            port_state: PortState::Follower,
             gmid: Some([1, 2, 3, 4, 5, 6, 7, 8]),
         };
         let states = [

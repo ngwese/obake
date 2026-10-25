@@ -34,7 +34,7 @@ const GET_REQUEST_LEN: usize = MGMT_PREFIX_LEN + TLV_HEADER_LEN;
 /// Latest PTP lock view used by qualify and status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PtpState {
-    /// True when [`PortState`] is SLAVE (daemon treats that as locked).
+    /// True when [`PortState`] is FOLLOWER (daemon treats that as locked).
     pub locked: bool,
     /// Domain number from the DOMAIN management ID.
     pub domain: u8,
@@ -87,8 +87,9 @@ pub enum PortState {
     Master = 6,
     Passive = 7,
     Uncalibrated = 8,
-    /// Synchronized to a grandmaster; daemon requires this for stream up.
-    Slave = 9,
+    /// Synchronized to a grandmaster (IEEE portState 9); required for stream up.
+    /// Displayed as FOLLOWER; linuxptp management text still says `SLAVE`.
+    Follower = 9,
     /// Unrecognized or missing value.
     Unknown = 0,
 }
@@ -105,12 +106,12 @@ impl PortState {
             6 => PortState::Master,
             7 => PortState::Passive,
             8 => PortState::Uncalibrated,
-            9 => PortState::Slave,
+            9 => PortState::Follower,
             _ => PortState::Unknown,
         }
     }
 
-    /// Parse a `pmc`-style text token (`SLAVE`, `LISTENING`, …).
+    /// Parse a `pmc`-style text token (`FOLLOWER`/`SLAVE`, `LISTENING`, …).
     pub fn parse(text: &str) -> Self {
         match text.trim() {
             "INITIALIZING" => PortState::Initializing,
@@ -121,17 +122,18 @@ impl PortState {
             "MASTER" => PortState::Master,
             "PASSIVE" => PortState::Passive,
             "UNCALIBRATED" => PortState::Uncalibrated,
-            "SLAVE" => PortState::Slave,
+            // linuxptp still prints SLAVE; accept FOLLOWER for display parity.
+            "SLAVE" | "FOLLOWER" => PortState::Follower,
             _ => PortState::Unknown,
         }
     }
 
     /// Whether this state counts as locked for stream qualification.
     pub fn is_locked(self) -> bool {
-        matches!(self, PortState::Slave)
+        matches!(self, PortState::Follower)
     }
 
-    /// Stable name for logs (`SLAVE`, `LISTENING`, …).
+    /// Stable name for logs and status (`FOLLOWER`, `LISTENING`, …).
     pub fn as_str(self) -> &'static str {
         match self {
             PortState::Initializing => "INITIALIZING",
@@ -142,7 +144,7 @@ impl PortState {
             PortState::Master => "MASTER",
             PortState::Passive => "PASSIVE",
             PortState::Uncalibrated => "UNCALIBRATED",
-            PortState::Slave => "SLAVE",
+            PortState::Follower => "FOLLOWER",
             PortState::Unknown => "UNKNOWN",
         }
     }
@@ -585,14 +587,15 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn binary_slave_is_locked() {
-        let data = fixture_port_data_set(PortState::Slave);
+    fn binary_follower_is_locked() {
+        let data = fixture_port_data_set(PortState::Follower);
         let msg = build_response(MID_PORT_DATA_SET, 1, &data);
         let (id, payload) = parse_management_response(&msg).unwrap();
         assert_eq!(id, MID_PORT_DATA_SET);
         let st = parse_port_data_set(payload).unwrap();
-        assert_eq!(st, PortState::Slave);
+        assert_eq!(st, PortState::Follower);
         assert!(st.is_locked());
+        assert_eq!(st.as_str(), "FOLLOWER");
     }
 
     #[test]
@@ -654,7 +657,7 @@ mod tests {
                 let id = u16::from_be_bytes([buf[52], buf[53]]);
                 let seq = u16::from_be_bytes([buf[30], buf[31]]);
                 let resp = if id == MID_PORT_DATA_SET {
-                    build_response(id, seq, &fixture_port_data_set(PortState::Slave))
+                    build_response(id, seq, &fixture_port_data_set(PortState::Follower))
                 } else if id == MID_DOMAIN {
                     build_response(id, seq, &fixture_domain_data(0))
                 } else {
@@ -669,7 +672,7 @@ mod tests {
         let mut client = PtpManagementClient::open(&server_path, &client_path).unwrap();
         let st = client.query_state();
         assert!(st.locked);
-        assert_eq!(st.port_state, PortState::Slave);
+        assert_eq!(st.port_state, PortState::Follower);
         assert_eq!(st.domain, 0);
         assert_eq!(st.gmid, Some(gmid));
 
@@ -706,13 +709,21 @@ clientOnly 1
     }
 
     #[test]
-    fn text_pmc_reply_still_parses() {
+    fn text_pmc_reply_still_parses_linuxptp_slave_token() {
         let text = "\
         portState               SLAVE
         domainNumber            0
 ";
         let st = parse_pmc_reply(text);
         assert!(st.locked);
+        assert_eq!(st.port_state, PortState::Follower);
+        assert_eq!(st.port_state.as_str(), "FOLLOWER");
+    }
+
+    #[test]
+    fn text_follower_token_parses_as_locked() {
+        assert_eq!(PortState::parse("FOLLOWER"), PortState::Follower);
+        assert!(PortState::parse("FOLLOWER").is_locked());
     }
 
     #[test]

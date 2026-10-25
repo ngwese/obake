@@ -143,7 +143,7 @@ fn default_lock_hold_ms() -> u64 {
 /// PTP-related daemon settings (not the `ptp4l` config file).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct PtpConfig {
-    /// Require `ptp4l` SLAVE continuously for this many milliseconds before
+    /// Require `ptp4l` FOLLOWER continuously for this many milliseconds before
     /// sources/sinks qualify. `0` brings media up on the lock edge.
     #[serde(default = "default_lock_hold_ms")]
     pub lock_hold_ms: u64,

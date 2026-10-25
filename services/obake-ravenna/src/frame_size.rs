@@ -75,6 +75,22 @@ pub fn ptime_ms(frame_size: u32, rate: u32) -> Option<f64> {
     Some(f64::from(frame_size) * 1000.0 / f64::from(rate))
 }
 
+/// `sess.ts-offset` so `(media_clock_samples + offset) % framecount == 0`.
+///
+/// Merging/AES67 receivers require RTP timestamps on integer packet
+/// boundaries from the media-clock epoch (`a=mediaclk:direct=0`).
+pub fn epoch_align_ts_offset(media_clock_samples: u64, framecount: u32) -> i32 {
+    if framecount == 0 {
+        return 0;
+    }
+    let rem = (media_clock_samples % u64::from(framecount)) as i32;
+    if rem == 0 {
+        0
+    } else {
+        -rem
+    }
+}
+
 /// Frame sizes that are legal at `rate`, or empty when the rate is unknown.
 pub fn legal_frame_sizes(rate: u32) -> Vec<u32> {
     if !is_legal_rate(rate) {
@@ -157,6 +173,16 @@ mod tests {
         assert!((p64 - 4.0 / 3.0).abs() < 1e-9);
         let p32 = ptime_ms(32, 48_000).unwrap();
         assert!((p32 - 2.0 / 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn epoch_align_offset_clears_remainder() {
+        assert_eq!(epoch_align_ts_offset(0, 48), 0);
+        assert_eq!(epoch_align_ts_offset(48, 48), 0);
+        assert_eq!(epoch_align_ts_offset(1040451096, 48), -24);
+        let samples = 1040451096u64;
+        let off = epoch_align_ts_offset(samples, 48);
+        assert_eq!((samples as i64 + i64::from(off)).rem_euclid(48), 0);
     }
 
     #[test]

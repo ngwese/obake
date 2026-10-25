@@ -14,6 +14,7 @@ pub mod pipewire_nodes;
 pub mod ptp;
 pub mod qualify;
 pub mod reconcile;
+pub mod rtp_probe;
 pub mod rtsp;
 pub mod sdp;
 pub mod status;

@@ -35,7 +35,9 @@ Live file (seeded once on `qdl`):
 
 `/home/obake/.config/obake-ravenna/config.toml`
 
-See `examples/config.toml` for a typical setup. Schema sketch:
+See `examples/config.toml` for a typical setup. `REFERENCE_GUIDE.md`
+explains every config key, the SDP and mDNS records, the PTP driver and
+RTP modules, and how to link native nodes and JACK shapes. Schema sketch:
 
 ```toml
 [graph]

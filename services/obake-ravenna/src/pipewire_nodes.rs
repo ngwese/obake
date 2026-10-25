@@ -7,10 +7,11 @@
 
 use crate::frame_size;
 use crate::qualify::{QualifiedSink, QualifiedSource};
+use crate::sdp;
 use log::{debug, info};
 use std::collections::HashMap;
 
-/// PipeWire RTP modules take `sess.ts-refclk` as a clock token.
+/// Fallback `sess.ts-refclk` when no grandmaster identity is available.
 pub const PTP_CLOCK_TOKEN: &str = "ptp=traceable";
 
 /// Which PipeWire RTP factory to load for a stream.
@@ -58,6 +59,10 @@ pub struct ModuleArgs {
     pub iface: String,
     /// Value for `sess.ts-refclk`.
     pub ts_refclk: String,
+    /// `sess.ts-offset` (epoch frame alignment for AES67 transmitters).
+    pub ts_offset: i32,
+    /// `net.loop` — true while probing own RTP timestamps for alignment.
+    pub net_loop: bool,
     /// RTP dynamic payload type.
     pub payload_type: u8,
     /// `node.group`.
@@ -82,7 +87,13 @@ impl ModuleArgs {
             port: src.destination.port,
             ttl: Some(src.ttl),
             iface: iface.to_string(),
-            ts_refclk: PTP_CLOCK_TOKEN.to_string(),
+            ts_refclk: format!(
+                "ptp=IEEE1588-2008:{}:{}",
+                sdp::format_gmid(&src.gmid),
+                src.domain
+            ),
+            ts_offset: 0,
+            net_loop: false,
             payload_type: src.payload_type,
             node_group: src.node_group.clone(),
         }
@@ -106,6 +117,8 @@ impl ModuleArgs {
             ttl: None,
             iface: iface.to_string(),
             ts_refclk: PTP_CLOCK_TOKEN.to_string(),
+            ts_offset: 0,
+            net_loop: false,
             payload_type: sink.sdp.payload_type,
             node_group: sink.node_group.clone(),
         }
@@ -116,7 +129,7 @@ impl ModuleArgs {
         format!(
             "kind={:?} name={} rate={} channels={} format={} framecount={} \
              ptime={} latency={} dest={}:{} ttl={:?} iface={} ts-refclk={} \
-             payload={} group={}",
+             ts-offset={} payload={} group={}",
             self.kind,
             self.name,
             self.rate,
@@ -130,6 +143,7 @@ impl ModuleArgs {
             self.ttl,
             self.iface,
             self.ts_refclk,
+            self.ts_offset,
             self.payload_type,
             self.node_group,
         )
@@ -272,6 +286,7 @@ mod tests {
             gmid: [0x00, 0x1d, 0xc1, 0xff, 0xfe, 0x12, 0x34, 0x56],
             payload_type: 104,
             node_group: "obake.ravenna".into(),
+            source_ip: std::net::Ipv4Addr::new(192, 168, 60, 50),
         }
     }
 
@@ -280,7 +295,10 @@ mod tests {
         let args = ModuleArgs::from_source(&sample_source(), "enp3s0");
         assert_eq!(args.payload_type, 104);
         assert_eq!(args.framecount, 48);
-        assert_eq!(args.ts_refclk, PTP_CLOCK_TOKEN);
+        assert_eq!(
+            args.ts_refclk,
+            "ptp=IEEE1588-2008:00-1D-C1-FF-FE-12-34-56:0"
+        );
         assert_eq!(args.node_group, "obake.ravenna");
         assert!(!args.debug_props().contains("aes67.driver-group"));
     }

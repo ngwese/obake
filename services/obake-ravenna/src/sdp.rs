@@ -62,24 +62,40 @@ pub fn format_gmid(gmid: &[u8; 8]) -> String {
 }
 
 /// Build the SDP body for a transmitting source.
+///
+/// Shape matches Merging/Anubis session DESCRIBE (clock-domain, TTL on
+/// `c=`, source-filter, sync-time/palign, recvonly) so peers fill CLOCK
+/// DOMAIN and can join the multicast cleanly.
 pub fn build_source_sdp(src: &QualifiedSource, session_name: &str) -> String {
     let ptime = frame_size::ptime_ms(src.frame_size, src.rate).unwrap_or(1.0);
     let encoding = src.format.as_str();
     let gmid = format_gmid(&src.gmid);
     let pt = src.payload_type;
+    let group = src.destination.group;
+    let ttl = src.ttl;
+    let src_ip = src.source_ip;
+    let refclk = format!("ptp=IEEE1588-2008:{gmid}:{}", src.domain);
     format!(
         "v=0\r\n\
-o=- 0 0 IN IP4 {group}\r\n\
+o=- 0 0 IN IP4 {src_ip}\r\n\
 s={session}\r\n\
-c=IN IP4 {group}\r\n\
+c=IN IP4 {group}/{ttl}\r\n\
 t=0 0\r\n\
+a=clock-domain:PTPv2 {domain}\r\n\
+a=ts-refclk:{refclk}\r\n\
+a=mediaclk:direct=0\r\n\
 m=audio {port} RTP/AVP {pt}\r\n\
+c=IN IP4 {group}/{ttl}\r\n\
 a=rtpmap:{pt} {encoding}/{rate}/{channels}\r\n\
-a=ptime:{ptime}\r\n\
+a=source-filter: incl IN IP4 {group} {src_ip}\r\n\
+a=clock-domain:PTPv2 {domain}\r\n\
+a=sync-time:0\r\n\
 a=framecount:{frame}\r\n\
-a=ts-refclk:ptp=IEEE1588-2008:{gmid}:{domain}\r\n\
-a=mediaclk:direct=0\r\n",
-        group = src.destination.group,
+a=palign:0\r\n\
+a=ptime:{ptime}\r\n\
+a=ts-refclk:{refclk}\r\n\
+a=mediaclk:direct=0\r\n\
+a=recvonly\r\n",
         session = session_name,
         port = src.destination.port,
         encoding = encoding,
@@ -88,8 +104,11 @@ a=mediaclk:direct=0\r\n",
         ptime = format_ptime(ptime),
         frame = src.frame_size,
         domain = src.domain,
-        gmid = gmid,
         pt = pt,
+        group = group,
+        ttl = ttl,
+        src_ip = src_ip,
+        refclk = refclk,
     )
 }
 
@@ -233,6 +252,7 @@ mod tests {
             gmid: [0x00, 0x1d, 0xc1, 0xff, 0xfe, 0x12, 0x34, 0x56],
             payload_type: 104,
             node_group: "obake.ravenna".into(),
+            source_ip: Ipv4Addr::new(192, 168, 60, 50),
         }
     }
 
@@ -244,6 +264,11 @@ mod tests {
         assert!(!text.contains("00-00-00-00-00-00-00-00"));
         assert!(text.contains("m=audio 5004 RTP/AVP 104"));
         assert!(text.contains("a=rtpmap:104 L24/48000/8"));
+        assert!(text.contains("a=clock-domain:PTPv2 0"));
+        assert!(text.contains("c=IN IP4 239.1.60.50/15"));
+        assert!(text.contains("a=source-filter: incl IN IP4 239.1.60.50 192.168.60.50"));
+        assert!(text.contains("a=recvonly"));
+        assert!(text.contains("o=- 0 0 IN IP4 192.168.60.50"));
         let parsed = parse_sdp(&text).unwrap();
         assert_eq!(parsed.group, Ipv4Addr::new(239, 1, 60, 50));
         assert_eq!(parsed.port, 5004);

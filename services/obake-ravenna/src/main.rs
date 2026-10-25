@@ -20,7 +20,9 @@ use obake_ravenna::rtsp::{new_shared_table, serve as serve_rtsp, update_table, R
 use obake_ravenna::status::{build_report, format_report};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -220,6 +222,8 @@ struct PtpInterface {
     present: bool,
     /// Kernel ifindex for Avahi publish/browse, when the netdev was present.
     ifindex: Option<i32>,
+    /// Unicast IPv4 on that netdev (SDP `o=` / `source-filter`).
+    ipv4: Option<Ipv4Addr>,
 }
 
 /// Try to read and parse the stream config. `Ok(None)` if the path is absent.
@@ -307,7 +311,7 @@ fn load_ptp_interface(ptp4l_config: &Path) -> PtpInterface {
             None
         }
     };
-    let (present, ifindex) = match name.as_ref() {
+    let (present, ifindex, ipv4) = match name.as_ref() {
         Some(n) => {
             let sys = Path::new("/sys/class/net").join(n);
             let exists = sys.exists();
@@ -316,24 +320,27 @@ fn load_ptp_interface(ptp4l_config: &Path) -> PtpInterface {
             } else {
                 None
             };
+            let ipv4 = if exists { read_iface_ipv4(n) } else { None };
             info!(
-                "startup: netdev {} syspath={} present={} ifindex={:?}",
+                "startup: netdev {} syspath={} present={} ifindex={:?} ipv4={:?}",
                 n,
                 sys.display(),
                 exists,
-                ifindex
+                ifindex,
+                ipv4
             );
-            (exists, ifindex)
+            (exists, ifindex, ipv4)
         }
         None => {
             info!("startup: no PTP netdev name in ptp4l config; interface_present=false");
-            (false, None)
+            (false, None, None)
         }
     };
     PtpInterface {
         name,
         present,
         ifindex,
+        ipv4,
     }
 }
 
@@ -344,6 +351,38 @@ fn mdns_node_name() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "obake".to_string())
+}
+
+/// Unicast IPv4 of `name` via `ip -4 -o addr show` (first non-loopback).
+fn read_iface_ipv4(name: &str) -> Option<Ipv4Addr> {
+    let output = Command::new("ip")
+        .args(["-4", "-o", "addr", "show", "dev", name])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut parts = text.split_whitespace();
+    while let Some(tok) = parts.next() {
+        if tok != "inet" {
+            continue;
+        }
+        let Some(cidr) = parts.next() else {
+            break;
+        };
+        if let Ok(ip) = cidr
+            .split('/')
+            .next()
+            .unwrap_or(cidr)
+            .parse::<Ipv4Addr>()
+        {
+            if !ip.is_loopback() {
+                return Some(ip);
+            }
+        }
+    }
+    None
 }
 
 /// Read `/sys/class/net/<name>/ifindex` for Avahi interface scoping.
@@ -430,12 +469,20 @@ fn tick(
         "tick: qualify rate={} frames={} locked={} gmid={:?}",
         config.graph.rate, config.packet.frames, ptp.locked, ptp.gmid
     );
+    // Refresh IPv4 each tick so DHCP renewals land in SDP without restart.
+    let source_ip = ptp_iface
+        .name
+        .as_deref()
+        .filter(|_| ptp_iface.present)
+        .and_then(read_iface_ipv4)
+        .or(ptp_iface.ipv4);
     let states = qualify(&QualifyInput {
         config,
         locked: ptp.locked,
         domain: ptp.domain,
         gmid: ptp.gmid,
         interface_present: ptp_iface.present,
+        source_ip,
         discovered: &discovered,
     });
     for state in &states {

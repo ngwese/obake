@@ -6,10 +6,13 @@
 //! Speaks IEEE 1588 management TLVs in-process (same messages `pmc -u`
 //! would send). Never spawns a helper and never adjusts a clock.
 
-use log::debug;
+use crate::frame_size;
+use log::{debug, warn};
+use std::fs;
 use std::io;
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 const MSG_MANAGEMENT: u8 = 0x0d;
@@ -406,6 +409,129 @@ pub fn interface_from_ptp4l_cfg(text: &str) -> Option<String> {
     None
 }
 
+/// Resolve `/dev/ptpN` for a netdev via sysfs (`…/device/ptp/ptpN`).
+pub fn phc_device_for_iface(iface: &str) -> Option<PathBuf> {
+    let ptp_dir = Path::new("/sys/class/net").join(iface).join("device/ptp");
+    let mut entries = fs::read_dir(&ptp_dir).ok()?;
+    let ent = entries.next()?.ok()?;
+    let name = ent.file_name();
+    let name = name.to_str()?;
+    if !name.starts_with("ptp") {
+        return None;
+    }
+    Some(PathBuf::from(format!("/dev/{name}")))
+}
+
+/// Read PHC time in nanoseconds via `phc_ctl <dev> get`.
+pub fn read_phc_time_nsec(iface: &str) -> Option<u64> {
+    let dev = phc_device_for_iface(iface)?;
+    let output = Command::new("phc_ctl").arg(&dev).arg("get").output().ok()?;
+    if !output.status.success() {
+        warn!(
+            "ptp: phc_ctl {} get failed status={}",
+            dev.display(),
+            output.status
+        );
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    parse_phc_ctl_nsec(&text)
+}
+
+/// Parse `phc_ctl … get` stdout (`clock time is SECONDS.FRAC …`).
+pub fn parse_phc_ctl_nsec(text: &str) -> Option<u64> {
+    for part in text.split_whitespace() {
+        if !part.contains('.') {
+            continue;
+        }
+        let Some((secs, frac)) = part.split_once('.') else {
+            continue;
+        };
+        let Ok(secs) = secs.parse::<u64>() else {
+            continue;
+        };
+        let frac_digits: String = frac.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if frac_digits.is_empty() {
+            continue;
+        }
+        let mut nsec_str = frac_digits;
+        while nsec_str.len() < 9 {
+            nsec_str.push('0');
+        }
+        nsec_str.truncate(9);
+        let Ok(nsec) = nsec_str.parse::<u64>() else {
+            continue;
+        };
+        return Some(secs.saturating_mul(1_000_000_000).saturating_add(nsec));
+    }
+    None
+}
+
+/// `sess.ts-offset` that epoch-aligns RTP timestamps for `framecount` at `rate`.
+pub fn epoch_align_offset_for_iface(iface: &str, rate: u32, framecount: u32) -> Option<i32> {
+    let nsec = read_phc_time_nsec(iface)?;
+    let samples = (u128::from(nsec) * u128::from(rate)) / 1_000_000_000u128;
+    let offset = frame_size::epoch_align_ts_offset(samples as u64, framecount);
+    debug!(
+        "ptp: epoch-align iface={iface} rate={rate} framecount={framecount} \
+         samples_mod={} offset={offset}",
+        (samples as u64) % u64::from(framecount.max(1))
+    );
+    Some(offset)
+}
+
+/// Media-clock sample count from the iface PHC via `clock_gettime`.
+pub fn phc_media_samples(iface: &str, rate: u32) -> Option<u64> {
+    let dev = phc_device_for_iface(iface)?;
+    let cpath = std::ffi::CString::new(dev.to_str()?).ok()?;
+    let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDONLY) };
+    if fd < 0 {
+        return None;
+    }
+    // FD_TO_CLOCKID(fd) = (~fd << 3) | 3
+    let clk = ((!fd) << 3) | 3;
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let rc = unsafe { libc::clock_gettime(clk, &mut ts) };
+    unsafe { libc::close(fd) };
+    if rc != 0 {
+        return None;
+    }
+    let nsec = (ts.tv_sec as u128)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(ts.tv_nsec as u128);
+    Some(((nsec * u128::from(rate)) / 1_000_000_000u128) as u64)
+}
+
+/// Busy-wait until `phc_media_samples(iface, rate) % framecount == lead`.
+pub fn wait_phc_rem(iface: &str, rate: u32, framecount: u32, lead: u32) -> Result<(), String> {
+    if framecount == 0 {
+        return Err("framecount 0".into());
+    }
+    let lead = lead % framecount;
+    let start = std::time::Instant::now();
+    loop {
+        let Some(samples) = phc_media_samples(iface, rate) else {
+            return Err(format!("no PHC for {iface}"));
+        };
+        if (samples % u64::from(framecount)) as u32 == lead {
+            debug!(
+                "ptp: hit rem={lead} iface={iface} after {:?}",
+                start.elapsed()
+            );
+            return Ok(());
+        }
+        if start.elapsed() > std::time::Duration::from_secs(2) {
+            return Err(format!(
+                "timeout waiting for PHC rem={lead} on {iface}"
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_micros(50));
+    }
+}
+
 /// Parse a captured `pmc` text reply (fixtures / operator paste). Not used
 /// on the daemon hot path.
 pub fn parse_pmc_reply(text: &str) -> PtpState {
@@ -551,6 +677,13 @@ clientOnly 1
 [enp1s0]
 ";
         assert_eq!(interface_from_ptp4l_cfg(cfg).as_deref(), Some("enp1s0"));
+    }
+
+    #[test]
+    fn parses_phc_ctl_get_line() {
+        let text = "phc_ctl[1087.679]: clock time is 1792891134.886718651 or Sun Oct 25 01:18:54 2026\n";
+        let nsec = parse_phc_ctl_nsec(text).unwrap();
+        assert_eq!(nsec, 1792891134_886718651);
     }
 
     #[test]

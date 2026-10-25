@@ -50,13 +50,13 @@ pub fn reconcile(
     Ok(())
 }
 
-/// Ensure the PTP driver matches `args`, or remove it when `args` is None.
+/// Ensure the PTP graph driver matches `want` (create/update/remove).
 pub fn reconcile_driver(
     client: &mut dyn PipewireClient,
-    args: Option<&DriverArgs>,
+    want: Option<&DriverArgs>,
 ) -> Result<(), String> {
-    match args {
-        Some(a) => client.ensure_driver(a),
+    match want {
+        Some(args) => client.ensure_driver(args),
         None => client.remove_driver(),
     }
 }
@@ -86,6 +86,7 @@ mod tests {
             gmid: [1, 2, 3, 4, 5, 6, 7, 8],
             payload_type: 98,
             node_group: "obake.ravenna".into(),
+            source_ip: std::net::Ipv4Addr::new(192, 168, 60, 50),
         })
     }
 
@@ -100,27 +101,31 @@ mod tests {
             &mut current,
         )
         .unwrap();
-        assert_eq!(current.len(), 1);
+        assert!(current.contains_key("a"));
+        assert!(pw.events.iter().any(|e| matches!(e, PwEvent::Load(_))));
         reconcile(&mut pw, "enp3s0", &[], &mut current).unwrap();
         assert!(current.is_empty());
-        assert!(pw
-            .events
-            .iter()
-            .any(|e| matches!(e, PwEvent::Unload(_))));
+        assert!(pw.events.iter().any(|e| matches!(e, PwEvent::Unload(_))));
     }
 
     #[test]
     fn driver_ensure_once() {
         let mut pw = RecordingPipewire::new(48_000);
-        let args = DriverArgs {
+        let driver = DriverArgs {
             name: "obake-ptp-driver".into(),
             node_group: "obake.ravenna".into(),
             clock_interface: "enp3s0".into(),
         };
-        reconcile_driver(&mut pw, Some(&args)).unwrap();
-        reconcile_driver(&mut pw, Some(&args)).unwrap();
-        assert_eq!(pw.driver.as_ref(), Some(&args));
+        reconcile_driver(&mut pw, Some(&driver)).unwrap();
+        reconcile_driver(&mut pw, Some(&driver)).unwrap();
+        assert_eq!(
+            pw.events
+                .iter()
+                .filter(|e| matches!(e, PwEvent::EnsureDriver(_)))
+                .count(),
+            2
+        );
         reconcile_driver(&mut pw, None).unwrap();
-        assert!(pw.driver.is_none());
+        assert!(pw.events.iter().any(|e| matches!(e, PwEvent::RemoveDriver)));
     }
 }

@@ -38,6 +38,12 @@ pub fn rtp_module_args(args: &ModuleArgs) -> String {
         .ttl
         .map(|t| format!("            net.ttl          = {t}\n"))
         .unwrap_or_default();
+    // Transmit timestamps follow the graph clock, then snap down onto the
+    // packet grid so `timestamp % framecount == 0` (AES67 mediaclk:direct=0).
+    let quantize = match args.kind {
+        ModuleKind::RtpSink => "            sess.ts-quantize   = true\n",
+        ModuleKind::RtpSource => "",
+    };
     format!(
         "{{\n\
             local.ifname     = \"{iface}\"\n\
@@ -52,8 +58,9 @@ pub fn rtp_module_args(args: &ModuleArgs) -> String {
             sess.name          = \"{name}\"\n\
             sess.media         = \"audio\"\n\
             sess.ts-refclk     = \"{ts}\"\n\
-            sess.ts-offset     = 0\n\
-            sess.ts-direct     = false\n\
+            sess.ts-offset     = {ts_offset}\n\
+            sess.ts-direct     = true\n\
+{quantize}\
             audio.format   = \"{format}\"\n\
             audio.rate     = {rate}\n\
             audio.channels = {channels}\n\
@@ -79,6 +86,8 @@ pub fn rtp_module_args(args: &ModuleArgs) -> String {
         latency = args.sess_latency_msec,
         name = args.name,
         ts = args.ts_refclk,
+        ts_offset = args.ts_offset,
+        quantize = quantize,
         format = args.audio_format,
         rate = args.rate,
         channels = args.channels,
@@ -108,7 +117,7 @@ pub fn driver_object_args(args: &DriverArgs) -> String {
             node.group      = \"{group}\"\n\
             priority.driver = 100000\n\
             clock.interface = \"{iface}\"\n\
-            resync.ms       = 1.5\n\
+            resync.ms       = 5.0\n\
         }}",
         name = args.name,
         group = args.node_group,
@@ -379,7 +388,10 @@ fn pw_thread(rx: pipewire::channel::Receiver<Cmd>, ready: mpsc::Sender<Result<()
             "node.group" => &*args.node_group,
             "priority.driver" => "100000",
             "clock.interface" => &*args.clock_interface,
-            "resync.ms" => "1.5",
+            // 1.5ms (=72 samples @48k) was just under observed PHC error
+            // (~74 samples), causing continuous spa.driver resets and SAC
+            // jumps that mute AES67 receivers.
+            "resync.ms" => "5.0",
         };
         let node = core
             .create_object::<pw::node::Node>("spa-node-factory", &props)
@@ -484,18 +496,21 @@ mod tests {
             gmid: [1, 2, 3, 4, 5, 6, 7, 8],
             payload_type: 104,
             node_group: "obake.ravenna".into(),
+            source_ip: std::net::Ipv4Addr::new(192, 168, 60, 50),
         };
         let args = ModuleArgs::from_source(&src, "enp3s0");
         let spa = rtp_module_args(&args);
         assert!(spa.contains("rtp.framecount      = 48"));
         assert!(spa.contains("rtp.payload         = 104"));
         assert!(spa.contains("node.group          = \"obake.ravenna\""));
+        assert!(spa.contains("sess.ts-direct     = true"));
+        assert!(spa.contains("sess.ts-quantize   = true"));
         assert!(!spa.contains("aes67.driver-group"));
         assert!(!spa.contains("object.export"));
         assert!(!spa.contains("clock.force-quantum"));
         assert_eq!(
             args.ts_refclk,
-            crate::pipewire_nodes::PTP_CLOCK_TOKEN
+            "ptp=IEEE1588-2008:01-02-03-04-05-06-07-08:0"
         );
         assert_eq!(rtp_module_name(&args.kind), "libpipewire-module-rtp-sink");
     }

@@ -85,6 +85,8 @@ pub struct QualifiedSource {
     pub payload_type: u8,
     /// PipeWire node group.
     pub node_group: String,
+    /// Unicast IPv4 of the PTP/egress interface (`o=` / `source-filter`).
+    pub source_ip: Ipv4Addr,
 }
 
 /// A sink that passed all checks and may load an RTP source module.
@@ -182,6 +184,8 @@ pub struct QualifyInput<'a> {
     pub gmid: Option<[u8; 8]>,
     /// True when the `ptp4l` interface name exists as a netdev.
     pub interface_present: bool,
+    /// Unicast IPv4 of that interface (for SDP `source-filter` / `o=`).
+    pub source_ip: Option<Ipv4Addr>,
     /// Map of `(device, stream)` → SDP from DNS-SD / DESCRIBE.
     pub discovered: &'a HashMap<(String, String), StreamSdp>,
 }
@@ -258,6 +262,9 @@ fn qualify_source(
     if !input.interface_present {
         return down(DownReason::InterfaceMissing);
     }
+    let Some(source_ip) = input.source_ip else {
+        return down(DownReason::InterfaceMissing);
+    };
     if !frame_size::is_legal_rate(rate) {
         return down(DownReason::BadSampleRate);
     }
@@ -291,6 +298,7 @@ fn qualify_source(
         gmid,
         payload_type,
         node_group: input.config.graph.node_group.clone(),
+        source_ip,
     })
 }
 
@@ -397,6 +405,7 @@ mod tests {
             domain: 0,
             gmid: Some(gmid()),
             interface_present: true,
+            source_ip: Some(Ipv4Addr::new(192, 168, 60, 50)),
             discovered,
         }
     }

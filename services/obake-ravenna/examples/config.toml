@@ -9,6 +9,11 @@
 rate = 48000
 node_group = "obake.ravenna"
 
+# Continuous SLAVE dwell before sources/sinks come up (ms). Default 2000;
+# set 0 for immediate bring-up on lock.
+# [ptp]
+# lock_hold_ms = 2000
+
 # RTP frames per packet (not the PipeWire quantum).
 [packet]
 frames = 48

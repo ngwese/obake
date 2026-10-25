@@ -25,6 +25,9 @@ management socket), not from the TOML file.
 rate = 48000
 node_group = "obake.ravenna"
 
+[ptp]
+lock_hold_ms = 2000
+
 [packet]
 frames = 48
 
@@ -60,6 +63,14 @@ nodes. The image seed is that empty file.
 
 Legal rates: 44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000.
 Anything else holds every stream down (`bad-sample-rate`).
+
+### `[ptp]`
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `lock_hold_ms` | `2000` | After `ptp4l` becomes SLAVE, sources and sinks stay held down until that lock has remained continuously true for this many milliseconds. Any unlock resets the timer. `0` brings media nodes up on the lock edge (previous behavior). |
+
+Status still reports `ptp: locked` / `ptp: unlocked` from `ptp4l`. While locked but waiting on this dwell, streams show `held-down (lock-hold)`.
 
 ### `[packet]`
 
@@ -101,12 +112,13 @@ to the same group and port are both held down (`duplicate-destination`).
 | `address` | no | Pin this source to its own multicast group. Otherwise `[multicast].address`. |
 | `port` | no | Pin an even RTP port. Otherwise `base_port + 2*index`. |
 
-A source stays down until `ptp4l` is SLAVE, a non-zero grandmaster
-identity is known, the PTP interface exists and has an IPv4 address, and
-the packet fits in the payload cap below. `obake-ravenna status` prints
-the reason: `unlocked`, `no-grandmaster`, `interface-missing`,
-`bad-destination`, `bad-payload-type`, `payload-too-large`, and the
-others in the README table.
+A source stays down until `ptp4l` is SLAVE, the lock-hold dwell has
+elapsed, a non-zero grandmaster identity is known, the PTP interface
+exists and has an IPv4 address, and the packet fits in the payload cap
+below. `obake-ravenna status` prints the reason: `unlocked`,
+`lock-hold`, `no-grandmaster`, `interface-missing`, `bad-destination`,
+`bad-payload-type`, `payload-too-large`, and the others in the README
+table.
 
 ### `[[sink]]` (network audio toward a local node)
 

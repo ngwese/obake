@@ -12,7 +12,9 @@ use obake_ravenna::avahi::{
 };
 use obake_ravenna::config::{Config, ConfigError};
 use obake_ravenna::pipewire_nodes::{DriverArgs, ModuleArgs, PipewireClient, RecordingPipewire};
-use obake_ravenna::ptp::{interface_from_ptp4l_cfg, PtpManagementClient, PtpState};
+use obake_ravenna::ptp::{
+    interface_from_ptp4l_cfg, lock_hold_satisfied, PtpManagementClient, PtpState,
+};
 use obake_ravenna::qualify::{qualify, QualifyInput, StreamState};
 use obake_ravenna::reconcile::{reconcile, reconcile_driver};
 use obake_ravenna::system_pw::SystemPipewire;
@@ -24,6 +26,7 @@ use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
@@ -148,6 +151,7 @@ async fn run_daemon(
     let mut current: HashMap<String, ModuleArgs> = HashMap::new();
     let mut prev_states: Vec<StreamState> = Vec::new();
     let mut prev_ptp = PtpState::unlocked();
+    let mut locked_since: Option<Instant> = None;
     let mut published_sessions: HashSet<String> = HashSet::new();
     let mut node_published = false;
     let mdns_node_name = mdns_node_name();
@@ -184,6 +188,7 @@ async fn run_daemon(
             &mut current,
             &mut prev_states,
             &mut prev_ptp,
+            &mut locked_since,
             &mdns_node_name,
             &mut node_published,
             &mut published_sessions,
@@ -420,6 +425,7 @@ fn tick(
     current: &mut HashMap<String, ModuleArgs>,
     prev_states: &mut Vec<StreamState>,
     prev_ptp: &mut PtpState,
+    locked_since: &mut Option<Instant>,
     mdns_node_name: &str,
     node_published: &mut bool,
     published_sessions: &mut HashSet<String>,
@@ -465,9 +471,15 @@ fn tick(
     let discovered = HashMap::new();
     debug!("tick: discovery results count={}", discovered.len());
 
+    let hold_ok = lock_hold_satisfied(
+        ptp.locked,
+        locked_since,
+        Instant::now(),
+        config.ptp.lock_hold_ms,
+    );
     debug!(
-        "tick: qualify rate={} frames={} locked={} gmid={:?}",
-        config.graph.rate, config.packet.frames, ptp.locked, ptp.gmid
+        "tick: qualify rate={} frames={} locked={} lock_hold={} gmid={:?}",
+        config.graph.rate, config.packet.frames, ptp.locked, hold_ok, ptp.gmid
     );
     // Refresh IPv4 each tick so DHCP renewals land in SDP without restart.
     let source_ip = ptp_iface
@@ -479,6 +491,7 @@ fn tick(
     let states = qualify(&QualifyInput {
         config,
         locked: ptp.locked,
+        lock_hold_satisfied: hold_ok,
         domain: ptp.domain,
         gmid: ptp.gmid,
         interface_present: ptp_iface.present,

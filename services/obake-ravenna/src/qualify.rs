@@ -17,6 +17,8 @@ use std::net::Ipv4Addr;
 pub enum DownReason {
     /// `ptp4l` is inactive or not in SLAVE.
     Unlocked,
+    /// Locked, but the configured continuous lock-hold has not elapsed.
+    LockHold,
     /// No grandmaster clock identity from `ptp4l`.
     NoGrandmaster,
     /// Configured sample rate is not an AES67 / RAVENNA media clock rate.
@@ -48,6 +50,7 @@ impl DownReason {
     pub fn as_str(self) -> &'static str {
         match self {
             DownReason::Unlocked => "unlocked",
+            DownReason::LockHold => "lock-hold",
             DownReason::NoGrandmaster => "no-grandmaster",
             DownReason::BadSampleRate => "bad-sample-rate",
             DownReason::BadFrameSize => "bad-frame-size",
@@ -178,6 +181,8 @@ pub struct QualifyInput<'a> {
     pub config: &'a Config,
     /// True when `ptp4l` port state is SLAVE.
     pub locked: bool,
+    /// True when SLAVE has been continuous for the configured lock-hold.
+    pub lock_hold_satisfied: bool,
     /// Local PTP domain number.
     pub domain: u8,
     /// Grandmaster identity from PARENT_DATA_SET (None if unknown/zero).
@@ -253,6 +258,9 @@ fn qualify_source(
     if !input.locked {
         return down(DownReason::Unlocked);
     }
+    if !input.lock_hold_satisfied {
+        return down(DownReason::LockHold);
+    }
     let Some(gmid) = input.gmid else {
         return down(DownReason::NoGrandmaster);
     };
@@ -311,6 +319,9 @@ fn qualify_sink(input: &QualifyInput<'_>, sink: &SinkConfig, rate: u32) -> Strea
     if !input.locked {
         return down(DownReason::Unlocked);
     }
+    if !input.lock_hold_satisfied {
+        return down(DownReason::LockHold);
+    }
     if input.gmid.is_none() || input.gmid == Some([0u8; 8]) {
         return down(DownReason::NoGrandmaster);
     }
@@ -348,7 +359,7 @@ fn qualify_sink(input: &QualifyInput<'_>, sink: &SinkConfig, rate: u32) -> Strea
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{GraphConfig, MulticastConfig, PacketConfig};
+    use crate::config::{GraphConfig, MulticastConfig, PacketConfig, PtpConfig};
 
     fn base_config() -> Config {
         Config {
@@ -357,6 +368,7 @@ mod tests {
                 node_group: "obake.ravenna".into(),
             },
             packet: PacketConfig { frames: 48 },
+            ptp: PtpConfig::default(),
             multicast: Some(MulticastConfig {
                 address: "239.1.60.50".into(),
                 base_port: 5004,
@@ -402,12 +414,35 @@ mod tests {
         QualifyInput {
             config: cfg,
             locked: true,
+            lock_hold_satisfied: true,
             domain: 0,
             gmid: Some(gmid()),
             interface_present: true,
             source_ip: Some(Ipv4Addr::new(192, 168, 60, 50)),
             discovered,
         }
+    }
+
+    #[test]
+    fn lock_hold_not_elapsed_holds_source_and_sink() {
+        let cfg = base_config();
+        let mut discovered = HashMap::new();
+        discovered.insert(("Studio-IO".into(), "PGM-1".into()), good_sdp());
+        let mut qi = input(&cfg, &discovered);
+        qi.lock_hold_satisfied = false;
+        let states = qualify(&qi);
+        assert_eq!(states[0].down_reason(), Some(DownReason::LockHold));
+        assert_eq!(states[1].down_reason(), Some(DownReason::LockHold));
+    }
+
+    #[test]
+    fn lock_hold_elapsed_allows_up() {
+        let cfg = base_config();
+        let mut discovered = HashMap::new();
+        discovered.insert(("Studio-IO".into(), "PGM-1".into()), good_sdp());
+        let states = qualify(&input(&cfg, &discovered));
+        assert!(matches!(&states[0], StreamState::SourceUp(_)));
+        assert!(matches!(&states[1], StreamState::SinkUp(_)));
     }
 
     #[test]

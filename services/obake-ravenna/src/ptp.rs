@@ -13,7 +13,7 @@ use std::io;
 use std::os::unix::net::UnixDatagram;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const MSG_MANAGEMENT: u8 = 0x0d;
 const PTP_VERSION: u8 = 0x12; // minor 1 | major 2, matching linuxptp 4.x
@@ -54,6 +54,25 @@ impl PtpState {
             gmid: None,
         }
     }
+}
+
+/// Update continuous-lock tracking and return whether the lock-hold has elapsed.
+///
+/// When `locked` is false, clears `locked_since` and returns false. When true,
+/// records the rising edge in `locked_since` (if unset) and returns whether
+/// `now - locked_since` is at least `hold_ms` (including when `hold_ms` is 0).
+pub fn lock_hold_satisfied(
+    locked: bool,
+    locked_since: &mut Option<Instant>,
+    now: Instant,
+    hold_ms: u64,
+) -> bool {
+    if !locked {
+        *locked_since = None;
+        return false;
+    }
+    let since = *locked_since.get_or_insert(now);
+    now.duration_since(since).as_millis() >= u128::from(hold_ms)
 }
 
 /// IEEE 1588 port state values (linuxptp `portState` byte).
@@ -694,5 +713,61 @@ clientOnly 1
 ";
         let st = parse_pmc_reply(text);
         assert!(st.locked);
+    }
+
+    #[test]
+    fn lock_hold_not_elapsed_until_duration() {
+        let t0 = Instant::now();
+        let mut since = None;
+        assert!(!lock_hold_satisfied(true, &mut since, t0, 2000));
+        assert!(since.is_some());
+        assert!(!lock_hold_satisfied(
+            true,
+            &mut since,
+            t0 + Duration::from_millis(1999),
+            2000
+        ));
+        assert!(lock_hold_satisfied(
+            true,
+            &mut since,
+            t0 + Duration::from_millis(2000),
+            2000
+        ));
+    }
+
+    #[test]
+    fn lock_hold_zero_satisfied_immediately() {
+        let t0 = Instant::now();
+        let mut since = None;
+        assert!(lock_hold_satisfied(true, &mut since, t0, 0));
+    }
+
+    #[test]
+    fn unlock_resets_lock_hold_timer() {
+        let t0 = Instant::now();
+        let mut since = None;
+        assert!(!lock_hold_satisfied(true, &mut since, t0, 2000));
+        assert!(lock_hold_satisfied(
+            true,
+            &mut since,
+            t0 + Duration::from_millis(2000),
+            2000
+        ));
+        assert!(!lock_hold_satisfied(false, &mut since, t0, 2000));
+        assert!(since.is_none());
+        let t1 = t0 + Duration::from_secs(10);
+        assert!(!lock_hold_satisfied(true, &mut since, t1, 2000));
+        assert!(!lock_hold_satisfied(
+            true,
+            &mut since,
+            t1 + Duration::from_millis(1999),
+            2000
+        ));
+        assert!(lock_hold_satisfied(
+            true,
+            &mut since,
+            t1 + Duration::from_millis(2000),
+            2000
+        ));
     }
 }

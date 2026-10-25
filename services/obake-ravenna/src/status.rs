@@ -111,6 +111,24 @@ mod tests {
     }
 
     #[test]
+    fn prints_lock_hold_while_ptp_locked() {
+        let ptp = PtpState {
+            locked: true,
+            domain: 0,
+            port_state: PortState::Slave,
+            gmid: Some([1, 2, 3, 4, 5, 6, 7, 8]),
+        };
+        let states = [StreamState::SourceDown {
+            name: "obake-out-1".into(),
+            reason: DownReason::LockHold,
+        }];
+        let text = format_report(&build_report(&ptp, &states));
+        assert!(text.contains("ptp: locked"));
+        assert!(text.contains("source obake-out-1: held-down (lock-hold)"));
+        assert!(!text.contains("held-down (unlocked)"));
+    }
+
+    #[test]
     fn prints_mtu_and_payload_type_reasons() {
         let ptp = PtpState {
             locked: true,

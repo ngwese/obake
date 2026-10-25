@@ -133,6 +133,30 @@ pub struct SinkConfig {
     pub stream: String,
 }
 
+/// Default continuous PTP lock dwell before media nodes may come up (ms).
+pub const DEFAULT_LOCK_HOLD_MS: u64 = 2000;
+
+fn default_lock_hold_ms() -> u64 {
+    DEFAULT_LOCK_HOLD_MS
+}
+
+/// PTP-related daemon settings (not the `ptp4l` config file).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct PtpConfig {
+    /// Require `ptp4l` SLAVE continuously for this many milliseconds before
+    /// sources/sinks qualify. `0` brings media up on the lock edge.
+    #[serde(default = "default_lock_hold_ms")]
+    pub lock_hold_ms: u64,
+}
+
+impl Default for PtpConfig {
+    fn default() -> Self {
+        Self {
+            lock_hold_ms: DEFAULT_LOCK_HOLD_MS,
+        }
+    }
+}
+
 /// Full daemon configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct Config {
@@ -142,6 +166,9 @@ pub struct Config {
     /// RTP frames per packet.
     #[serde(default)]
     pub packet: PacketConfig,
+    /// Lock-hold dwell and related PTP gating.
+    #[serde(default)]
+    pub ptp: PtpConfig,
     /// Transmit multicast base (required when any `[[source]]` is present).
     #[serde(default)]
     pub multicast: Option<MulticastConfig>,
@@ -314,6 +341,7 @@ stream = "Anubis_Combo 1/2"
         assert_eq!(cfg.graph.rate, 48_000);
         assert_eq!(cfg.graph.node_group, "obake.ravenna");
         assert_eq!(cfg.packet.frames, 48);
+        assert_eq!(cfg.ptp.lock_hold_ms, DEFAULT_LOCK_HOLD_MS);
         let mc = cfg.multicast.as_ref().unwrap();
         assert_eq!(mc.address, "239.1.60.50");
         assert_eq!(mc.base_port, 5004);
@@ -334,6 +362,25 @@ stream = "Anubis_Combo 1/2"
         assert!(cfg.source.is_empty());
         assert!(cfg.sink.is_empty());
         assert!(cfg.multicast.is_none());
+        assert_eq!(cfg.ptp.lock_hold_ms, DEFAULT_LOCK_HOLD_MS);
+    }
+
+    #[test]
+    fn absent_ptp_table_defaults_lock_hold() {
+        let cfg = Config::from_str("[graph]\nrate = 48000\n").unwrap();
+        assert_eq!(cfg.ptp.lock_hold_ms, 2000);
+    }
+
+    #[test]
+    fn explicit_zero_lock_hold() {
+        let cfg = Config::from_str("[ptp]\nlock_hold_ms = 0\n").unwrap();
+        assert_eq!(cfg.ptp.lock_hold_ms, 0);
+    }
+
+    #[test]
+    fn explicit_lock_hold_value() {
+        let cfg = Config::from_str("[ptp]\nlock_hold_ms = 5000\n").unwrap();
+        assert_eq!(cfg.ptp.lock_hold_ms, 5000);
     }
 
     #[test]

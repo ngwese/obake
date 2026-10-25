@@ -24,8 +24,14 @@ pub const RAVENNA_SERVICE_TYPE: &str = "_ravenna._sub._rtsp._tcp";
 /// Browse type for RAVENNA **sessions** (named streams).
 pub const RAVENNA_SESSION_SERVICE_TYPE: &str = "_ravenna_session._sub._rtsp._tcp";
 
-/// Primary DNS-SD type registered with Avahi (`AddService`).
+/// Primary DNS-SD type for RAVENNA RTSP records (`AddService`).
 const RTSP_SERVICE_TYPE: &str = "_rtsp._tcp";
+
+/// Primary DNS-SD type for the ZMAN HTTP record.
+const HTTP_SERVICE_TYPE: &str = "_http._tcp";
+
+/// Avahi subtype ANEMAN uses to select a ZMAN-class device.
+pub const ZMAN_SERVICE_SUBTYPE: &str = "_merging_zman._sub._http._tcp";
 
 const AVAHI_DEST: &str = "org.freedesktop.Avahi";
 const SERVER_IFACE: &str = "org.freedesktop.Avahi.Server";
@@ -42,14 +48,25 @@ pub enum PublishKind {
     Node,
     /// Named streaming session (`_ravenna_session` subtype).
     Session,
+    /// ZMAN HTTP service (`_merging_zman` subtype) for ANEMAN.
+    Zman,
 }
 
 impl PublishKind {
+    /// DNS-SD type passed to Avahi `AddService`.
+    pub fn service_type(self) -> &'static str {
+        match self {
+            PublishKind::Node | PublishKind::Session => RTSP_SERVICE_TYPE,
+            PublishKind::Zman => HTTP_SERVICE_TYPE,
+        }
+    }
+
     /// Full Avahi subtype string for this registration.
     pub fn subtype(self) -> &'static str {
         match self {
             PublishKind::Node => RAVENNA_SERVICE_TYPE,
             PublishKind::Session => RAVENNA_SESSION_SERVICE_TYPE,
+            PublishKind::Zman => ZMAN_SERVICE_SUBTYPE,
         }
     }
 
@@ -58,6 +75,7 @@ impl PublishKind {
         match self {
             PublishKind::Node => format!("node:{name}"),
             PublishKind::Session => format!("session:{name}"),
+            PublishKind::Zman => format!("zman:{name}"),
         }
     }
 }
@@ -108,6 +126,17 @@ pub fn publish_ravenna_session(name: &str, port: u16, interface_index: i32) -> P
         port,
         interface_index,
         txt: vec![path.into_bytes()],
+    }
+}
+
+/// Build a ZMAN HTTP publish (`_http._tcp` + `_merging_zman` subtype).
+pub fn publish_zman(name: &str, port: u16, interface_index: i32) -> PublishRequest {
+    PublishRequest {
+        name: name.to_string(),
+        kind: PublishKind::Zman,
+        port,
+        interface_index,
+        txt: Vec::new(),
     }
 }
 
@@ -247,6 +276,7 @@ impl SystemAvahi {
         }
 
         let group = self.entry_group_new().await?;
+        let service_type = req.kind.service_type();
         let subtype = req.kind.subtype();
         // Empty TXT still emits the mandatory empty record for node publishes.
         let txt = req.txt.clone();
@@ -263,7 +293,7 @@ impl SystemAvahi {
                         PROTO_INET,
                         0u32,
                         req.name.as_str(),
-                        RTSP_SERVICE_TYPE,
+                        service_type,
                         "",
                         "",
                         req.port,
@@ -284,7 +314,7 @@ impl SystemAvahi {
                         PROTO_INET,
                         0u32,
                         req.name.as_str(),
-                        RTSP_SERVICE_TYPE,
+                        service_type,
                         "",
                         subtype,
                     ),
@@ -307,7 +337,7 @@ impl SystemAvahi {
 
         info!(
             "mdns: published kind={:?} name={} type={} subtype={} port={} ifindex={}",
-            req.kind, req.name, RTSP_SERVICE_TYPE, subtype, req.port, req.interface_index
+            req.kind, req.name, service_type, subtype, req.port, req.interface_index
         );
         self.groups.insert(key, group);
         Ok(())
@@ -388,6 +418,33 @@ mod tests {
         assert_eq!(
             client.unpublished,
             vec![(PublishKind::Session, "obake-out-1".to_string())]
+        );
+    }
+
+    #[test]
+    fn zman_publish_keeps_rtsp_records() {
+        let mut client = RecordingAvahi::default();
+        let node = publish_ravenna_node("bata", 8554, 3);
+        let session = publish_ravenna_session("obake-out-1", 8554, 3);
+        let zman = publish_zman("bata", crate::zman::ZMAN_PORT, 3);
+        client.publish(&node).unwrap();
+        client.publish(&session).unwrap();
+        client.publish(&zman).unwrap();
+        client.unpublish(PublishKind::Zman, "bata").unwrap();
+        assert_eq!(zman.kind.service_type(), "_http._tcp");
+        assert_eq!(zman.kind.subtype(), ZMAN_SERVICE_SUBTYPE);
+        assert_eq!(zman.port, crate::zman::ZMAN_PORT);
+        assert!(client
+            .published
+            .iter()
+            .any(|r| r.kind == PublishKind::Node && r.port == 8554));
+        assert!(client
+            .published
+            .iter()
+            .any(|r| r.kind == PublishKind::Session));
+        assert_eq!(
+            client.unpublished,
+            vec![(PublishKind::Zman, "bata".to_string())]
         );
     }
 

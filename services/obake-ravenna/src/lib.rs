@@ -19,6 +19,7 @@ pub mod rtsp;
 pub mod sdp;
 pub mod status;
 pub mod system_pw;
+pub mod zman;
 
 /// Re-export the on-disk config types most callers need.
 pub use config::{Config, Format, SinkConfig, SourceConfig};

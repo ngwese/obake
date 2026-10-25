@@ -7,8 +7,8 @@ use clap::{Parser, Subcommand};
 use env_logger::Env;
 use log::{debug, info, warn};
 use obake_ravenna::avahi::{
-    browse_ravenna, publish_ravenna_node, publish_ravenna_session, AvahiClient, PublishKind,
-    RecordingAvahi, SystemAvahi,
+    browse_ravenna, publish_ravenna_node, publish_ravenna_session, publish_zman, AvahiClient,
+    PublishKind, RecordingAvahi, SystemAvahi,
 };
 use obake_ravenna::config::{Config, ConfigError};
 use obake_ravenna::pipewire_nodes::{DriverArgs, ModuleArgs, PipewireClient, RecordingPipewire};
@@ -20,6 +20,7 @@ use obake_ravenna::reconcile::{reconcile, reconcile_driver};
 use obake_ravenna::system_pw::SystemPipewire;
 use obake_ravenna::rtsp::{new_shared_table, serve as serve_rtsp, update_table, RTSP_PORT};
 use obake_ravenna::status::{build_report, format_report};
+use obake_ravenna::zman::{self, ZMAN_PORT};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::net::Ipv4Addr;
@@ -53,6 +54,9 @@ enum Commands {
         /// `ptp4l` read-only management Unix socket.
         #[arg(long, default_value = "/run/ptp4l/ptp4l.ro")]
         pmc_socket: PathBuf,
+        /// Do not listen for ZMAN clients or publish the `_merging_zman` record.
+        #[arg(long)]
+        no_zman: bool,
     },
     /// Print PTP lock and stream hold-down state.
     Status {
@@ -73,7 +77,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config,
             ptp4l_config,
             pmc_socket,
-        } => run_daemon(config, ptp4l_config, pmc_socket).await?,
+            no_zman,
+        } => run_daemon(config, ptp4l_config, pmc_socket, no_zman).await?,
         Commands::Status { runtime_dir } => {
             let dir = runtime_dir
                 .or_else(|| std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from))
@@ -89,6 +94,7 @@ async fn run_daemon(
     config_path: PathBuf,
     ptp4l_config: PathBuf,
     pmc_socket: PathBuf,
+    no_zman: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!(
         "startup: daemon starting config={} ptp4l_config={} pmc_socket={}",
@@ -154,8 +160,13 @@ async fn run_daemon(
     let mut locked_since: Option<Instant> = None;
     let mut published_sessions: HashSet<String> = HashSet::new();
     let mut node_published = false;
+    let mut zman_published = false;
+    let mut zman_started = false;
     let mdns_node_name = mdns_node_name();
     info!("startup: mDNS node name={mdns_node_name}");
+    if no_zman {
+        info!("zman: disabled");
+    }
     let client_sock = runtime.join("obake-ravenna.pmc");
 
     let ptp_iface = load_ptp_interface(&ptp4l_config);
@@ -191,6 +202,9 @@ async fn run_daemon(
             &mut locked_since,
             &mdns_node_name,
             &mut node_published,
+            !no_zman,
+            &mut zman_published,
+            &mut zman_started,
             &mut published_sessions,
             &shared_states,
             &shared_ptp,
@@ -428,6 +442,9 @@ fn tick(
     locked_since: &mut Option<Instant>,
     mdns_node_name: &str,
     node_published: &mut bool,
+    zman_enabled: bool,
+    zman_published: &mut bool,
+    zman_started: &mut bool,
     published_sessions: &mut HashSet<String>,
     shared_states: &Arc<Mutex<Vec<StreamState>>>,
     shared_ptp: &Arc<Mutex<PtpState>>,
@@ -526,11 +543,16 @@ fn tick(
         reconcile_driver(pw, None)?;
     }
 
+    if zman_enabled {
+        ensure_zman_listener(zman_started, source_ip, mdns_node_name);
+    }
     sync_mdns_registration(
         avahi,
         ptp_iface.ifindex,
         mdns_node_name,
         node_published,
+        zman_published,
+        zman_enabled && *zman_started,
         published_sessions,
         &states,
     );
@@ -576,12 +598,33 @@ fn log_stream_state_changes(prev: &[StreamState], next: &[StreamState]) {
     }
 }
 
-/// Publish node + session mDNS records per RAVENNA §3.5.
+/// Start the ZMAN listener once the PTP interface has an address.
+fn ensure_zman_listener(started: &mut bool, source_ip: Option<Ipv4Addr>, hostname: &str) {
+    if *started {
+        return;
+    }
+    let Some(ip) = source_ip else {
+        return;
+    };
+    match zman::bind(ip, ZMAN_PORT) {
+        Ok(listener) => {
+            *started = true;
+            let host = hostname.to_string();
+            tokio::spawn(zman::run(listener, host));
+            info!("zman: bound {ip}:{ZMAN_PORT}");
+        }
+        Err(e) => warn!("zman: bind {ip}:{ZMAN_PORT} failed: {e}"),
+    }
+}
+
+/// Publish node + session mDNS records per RAVENNA §3.5, plus the ZMAN HTTP record.
 fn sync_mdns_registration(
     avahi: &mut dyn AvahiClient,
     ifindex: Option<i32>,
     node_name: &str,
     node_published: &mut bool,
+    zman_published: &mut bool,
+    zman_listening: bool,
     published_sessions: &mut HashSet<String>,
     states: &[StreamState],
 ) {
@@ -597,7 +640,13 @@ fn sync_mdns_registration(
         if !want_sessions.is_empty() || *node_published {
             warn!("mdns: no PTP ifindex; withdrawing advertisements");
         }
-        withdraw_all_mdns(avahi, node_name, node_published, published_sessions);
+        withdraw_all_mdns(
+            avahi,
+            node_name,
+            node_published,
+            zman_published,
+            published_sessions,
+        );
         return;
     };
 
@@ -610,6 +659,17 @@ fn sync_mdns_registration(
                 *node_published = true;
             }
             Err(e) => warn!("mdns: register node={node_name} failed: {e}"),
+        }
+    }
+
+    if zman_listening && !*zman_published {
+        let req = publish_zman(node_name, ZMAN_PORT, ifindex);
+        match avahi.publish(&req) {
+            Ok(()) => {
+                info!("mdns: registered zman={node_name} port={ZMAN_PORT}");
+                *zman_published = true;
+            }
+            Err(e) => warn!("mdns: register zman={node_name} failed: {e}"),
         }
     }
 
@@ -645,6 +705,7 @@ fn withdraw_all_mdns(
     avahi: &mut dyn AvahiClient,
     node_name: &str,
     node_published: &mut bool,
+    zman_published: &mut bool,
     published_sessions: &mut HashSet<String>,
 ) {
     let sessions: Vec<String> = published_sessions.drain().collect();
@@ -658,6 +719,12 @@ fn withdraw_all_mdns(
             warn!("mdns: unpublish node={node_name} failed: {e}");
         }
         *node_published = false;
+    }
+    if *zman_published {
+        if let Err(e) = avahi.unpublish(PublishKind::Zman, node_name) {
+            warn!("mdns: unpublish zman={node_name} failed: {e}");
+        }
+        *zman_published = false;
     }
 }
 

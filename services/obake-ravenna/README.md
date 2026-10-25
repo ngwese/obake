@@ -105,8 +105,11 @@ non-`global` section in `/home/obake/.config/linuxptp/ptp4l.cfg`.
 
 ```
 obake-ravenna run
+obake-ravenna run --no-zman
 obake-ravenna status
 ```
+
+`--no-zman` skips the ZMAN listener and the `_merging_zman` advertisement.
 
 Logging uses `env_logger`. Default filter is `info` (also set on the user
 unit). For full traces including PTP TLVs, discovery, and each tick:

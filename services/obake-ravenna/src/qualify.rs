@@ -382,7 +382,9 @@ fn qualify_sink(input: &QualifyInput<'_>, sink: &SinkConfig, rate: u32) -> Strea
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{GraphConfig, MulticastConfig, PacketConfig, PtpConfig};
+    use crate::config::{
+        DiscoveryConfig, GraphConfig, MulticastConfig, PacketConfig, PtpConfig,
+    };
 
     fn base_config() -> Config {
         Config {
@@ -392,6 +394,7 @@ mod tests {
             },
             packet: PacketConfig { frames: 48 },
             ptp: PtpConfig::default(),
+            discovery: DiscoveryConfig::default(),
             multicast: Some(MulticastConfig {
                 address: "239.1.60.50".into(),
                 base_port: 5004,

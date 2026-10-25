@@ -478,3 +478,113 @@ from lock-hold.
   is configured
 - **THEN** the query reports the clock locked and that source held
   down for the offset hold
+
+### Requirement: Network devices and sessions can be browsed
+
+The `obake` user SHALL be able to run a one-shot `browse` command that
+enumerates RAVENNA devices and sessions visible on the interface named
+by the `ptp4l` configuration. The command SHALL NOT require the session
+daemon to be running, and SHALL NOT change PipeWire objects, mDNS
+registrations, or stream qualify state.
+
+#### Scenario: Browse lists a peer device and its sessions
+
+- **WHEN** a peer advertises a RAVENNA node and at least one session on
+  the PTP interface and the operator runs `browse`
+- **THEN** the report names that device
+- **AND** lists each of that peer's sessions under it
+
+#### Scenario: Browse works without the daemon
+
+- **WHEN** the session daemon is not running and the operator runs
+  `browse` on an interface with peer advertisements
+- **THEN** the report still lists discovered devices and sessions
+
+#### Scenario: Missing PTP interface yields no devices
+
+- **WHEN** the `ptp4l` configuration does not name an interface that is
+  present and the operator runs `browse`
+- **THEN** the report lists no devices
+
+### Requirement: Browse summarizes each session SDP
+
+For each discovered session, `browse` SHALL DESCRIBE the session over
+RTSP, parse the SDP, and print the sample rate, channel count, format,
+frame size, and multicast group and port. When the session TXT includes
+a `path` key, that path SHALL be used. When it does not, the command
+SHALL DESCRIBE `/by-name/<session instance name>`. A DESCRIBE or SDP
+failure SHALL still list the session with a short failure reason.
+
+#### Scenario: Session summary from a successful DESCRIBE
+
+- **WHEN** a discovered session answers DESCRIBE with a parseable SDP
+- **THEN** the report shows that session's sample rate, channel count,
+  format, frame size, and multicast group and port
+
+#### Scenario: Missing TXT path uses by-name
+
+- **WHEN** a discovered session has no TXT `path` and its instance name
+  is `PGM-1`
+- **THEN** the command DESCRIBEs `/by-name/PGM-1` on that session's
+  resolved host and port
+
+#### Scenario: Failed DESCRIBE still lists the session
+
+- **WHEN** a discovered session's DESCRIBE fails or the SDP cannot be
+  parsed
+- **THEN** the report still names that session under its device
+- **AND** includes a short reason instead of the media summary
+
+### Requirement: The daemon discovers peer session SDP
+
+The daemon SHALL browse RAVENNA device and session advertisements on the
+`ptp4l` interface and SHALL retrieve session SDP over RTSP DESCRIBE for
+configured sinks that are not yet established. It SHALL key each result
+by the browsed device instance name and session instance name. A
+configured sink whose `device` and `stream` match a discovered pair
+SHALL use that SDP for qualify (subject to existing multicast, rate,
+domain, and PTP gates). DESCRIBE paths SHALL use the session TXT `path`
+when present, otherwise `/by-name/<session>`, with path segments
+percent-encoded on the request line.
+
+#### Scenario: A matching sink leaves device-absent
+
+- **WHEN** a peer advertises device `Anubis_610267` and session
+  `Anubis_610267_Combo 1/2` with acceptable SDP, PTP gates pass, and a
+  sink is configured with that device and stream
+- **THEN** that sink is not held down for `device-absent`
+
+#### Scenario: Unknown device stays device-absent
+
+- **WHEN** a sink names a device and stream that are not present in the
+  discovery results
+- **THEN** that sink remains held down for `device-absent`
+
+#### Scenario: Session names with spaces DESCRIBE successfully
+
+- **WHEN** a discovered session instance name contains spaces or
+  parentheses and has no TXT `path`
+- **THEN** the daemon DESCRIBEs `/by-name/<that name>` with a
+  percent-encoded request-URI
+- **AND** a successful response is available for sink qualify
+
+### Requirement: Established sinks keep cached SDP
+
+While a sink remains up, the daemon SHALL continue to use the SDP
+already obtained for that `(device, stream)` and SHALL NOT re-DESCRIBE
+or otherwise re-fetch that session's SDP on each control-loop tick or
+discovery refresh. The daemon MAY DESCRIBE again after the sink goes
+down, is removed from configuration, or the cached entry is cleared
+because the peer advertisement disappeared.
+
+#### Scenario: No DESCRIBE while the sink stays up
+
+- **WHEN** a sink has qualified and is up from a prior DESCRIBE
+- **THEN** subsequent control-loop ticks do not DESCRIBE that session
+  again while the sink remains up
+
+#### Scenario: DESCRIBE may run again after the sink drops
+
+- **WHEN** a previously up sink becomes held down or is removed from
+  configuration, and later a matching peer session is needed again
+- **THEN** the daemon may DESCRIBE that session to re-establish SDP

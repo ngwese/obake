@@ -169,6 +169,40 @@ impl Default for PtpConfig {
     }
 }
 
+/// Default mDNS settle window before resolving peers (ms).
+pub const DEFAULT_DISCOVERY_SETTLE_MS: u64 = 2000;
+
+/// Default pause between discovery refreshes (ms).
+pub const DEFAULT_DISCOVERY_PERIOD_MS: u64 = 5000;
+
+fn default_discovery_settle_ms() -> u64 {
+    DEFAULT_DISCOVERY_SETTLE_MS
+}
+
+fn default_discovery_period_ms() -> u64 {
+    DEFAULT_DISCOVERY_PERIOD_MS
+}
+
+/// Background peer-discovery timing for sinks.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct DiscoveryConfig {
+    /// How long each mDNS browse waits before resolving (milliseconds).
+    #[serde(default = "default_discovery_settle_ms")]
+    pub settle_ms: u64,
+    /// Pause between discovery refreshes (milliseconds).
+    #[serde(default = "default_discovery_period_ms")]
+    pub period_ms: u64,
+}
+
+impl Default for DiscoveryConfig {
+    fn default() -> Self {
+        Self {
+            settle_ms: DEFAULT_DISCOVERY_SETTLE_MS,
+            period_ms: DEFAULT_DISCOVERY_PERIOD_MS,
+        }
+    }
+}
+
 /// Full daemon configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 pub struct Config {
@@ -181,6 +215,9 @@ pub struct Config {
     /// Lock-hold dwell and related PTP gating.
     #[serde(default)]
     pub ptp: PtpConfig,
+    /// Peer discovery refresh timing for `[[sink]]`.
+    #[serde(default)]
+    pub discovery: DiscoveryConfig,
     /// Transmit multicast base (required when any `[[source]]` is present).
     #[serde(default)]
     pub multicast: Option<MulticastConfig>,
@@ -355,6 +392,8 @@ stream = "Anubis_Combo 1/2"
         assert_eq!(cfg.packet.frames, 48);
         assert_eq!(cfg.ptp.lock_hold_ms, DEFAULT_LOCK_HOLD_MS);
         assert_eq!(cfg.ptp.max_offset_ns, DEFAULT_MAX_OFFSET_NS);
+        assert_eq!(cfg.discovery.settle_ms, DEFAULT_DISCOVERY_SETTLE_MS);
+        assert_eq!(cfg.discovery.period_ms, DEFAULT_DISCOVERY_PERIOD_MS);
         let mc = cfg.multicast.as_ref().unwrap();
         assert_eq!(mc.address, "239.1.60.50");
         assert_eq!(mc.base_port, 5004);
@@ -377,6 +416,18 @@ stream = "Anubis_Combo 1/2"
         assert!(cfg.multicast.is_none());
         assert_eq!(cfg.ptp.lock_hold_ms, DEFAULT_LOCK_HOLD_MS);
         assert_eq!(cfg.ptp.max_offset_ns, DEFAULT_MAX_OFFSET_NS);
+        assert_eq!(cfg.discovery.settle_ms, DEFAULT_DISCOVERY_SETTLE_MS);
+        assert_eq!(cfg.discovery.period_ms, DEFAULT_DISCOVERY_PERIOD_MS);
+    }
+
+    #[test]
+    fn explicit_discovery_timing() {
+        let cfg = Config::from_str(
+            "[discovery]\nsettle_ms = 1000\nperiod_ms = 15000\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.discovery.settle_ms, 1000);
+        assert_eq!(cfg.discovery.period_ms, 15000);
     }
 
     #[test]

@@ -7,26 +7,35 @@ use clap::{Parser, Subcommand};
 use env_logger::Env;
 use log::{debug, info, warn};
 use obake_ravenna::avahi::{
-    browse_ravenna, publish_ravenna_node, publish_ravenna_session, AvahiClient, PublishKind,
-    RecordingAvahi, SystemAvahi,
+    publish_ravenna_node, publish_ravenna_session, AvahiClient, PublishKind, RecordingAvahi,
+    SystemAvahi,
+};
+use obake_ravenna::browse::{
+    build_report as build_browse_report, format_report as format_browse_report,
+    format_report_with_sdp_dumps, group_by_endpoint,
 };
 use obake_ravenna::config::{Config, ConfigError};
+use obake_ravenna::discovery::{
+    describe_all_peers, new_shared_ifindex, new_shared_map, new_shared_timing, new_shared_wanted,
+    spawn_discovery_task, DiscoveryTiming, SessionKey, SharedDiscoveryMap, SharedDiscoveryTiming,
+    SharedIfindex, SharedWantedKeys,
+};
 use obake_ravenna::pipewire_nodes::{DriverArgs, ModuleArgs, PipewireClient, RecordingPipewire};
 use obake_ravenna::ptp::{
     interface_from_ptp4l_cfg, lock_hold_satisfied, PtpManagementClient, PtpState,
 };
 use obake_ravenna::qualify::{qualify, QualifyInput, StreamState};
 use obake_ravenna::reconcile::{reconcile, reconcile_driver};
-use obake_ravenna::system_pw::SystemPipewire;
 use obake_ravenna::rtsp::{new_shared_table, serve as serve_rtsp, update_table, RTSP_PORT};
 use obake_ravenna::status::{build_report, format_report};
+use obake_ravenna::system_pw::SystemPipewire;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
@@ -60,14 +69,32 @@ enum Commands {
         #[arg(long)]
         runtime_dir: Option<PathBuf>,
     },
+    /// One-shot scan of RAVENNA devices and sessions on the PTP NIC.
+    Browse {
+        /// Path to `ptp4l` config (used to discover the PTP netdev).
+        #[arg(long, default_value = "/home/obake/.config/linuxptp/ptp4l.cfg")]
+        ptp4l_config: PathBuf,
+        /// Seconds to wait for mDNS advertisements before resolving.
+        #[arg(long, default_value_t = 3)]
+        timeout: u64,
+        /// After each session line, print the raw DESCRIBE SDP body.
+        #[arg(long)]
+        dump_sdp: bool,
+    },
 }
 
 /// Dispatch CLI subcommands.
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::Builder::from_env(Env::default().default_filter_or("info")).init();
-
     let cli = Cli::parse();
+    // One-shot commands stay quiet unless RUST_LOG overrides; the daemon
+    // keeps the info default for operational logs.
+    let default_log = match &cli.command {
+        Commands::Run { .. } => "info",
+        Commands::Status { .. } | Commands::Browse { .. } => "warn",
+    };
+    env_logger::Builder::from_env(Env::default().default_filter_or(default_log)).init();
+
     match cli.command {
         Commands::Run {
             config,
@@ -80,6 +107,58 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .ok_or("XDG_RUNTIME_DIR unset")?;
             status_client(&dir.join("obake-ravenna.status")).await?;
         }
+        Commands::Browse {
+            ptp4l_config,
+            timeout,
+            dump_sdp,
+        } => browse_command(ptp4l_config, Duration::from_secs(timeout), dump_sdp).await?,
+    }
+    Ok(())
+}
+
+/// One-shot mDNS + DESCRIBE diagnostic (does not talk to the daemon).
+async fn browse_command(
+    ptp4l_config: PathBuf,
+    settle: Duration,
+    dump_sdp: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ptp_iface = load_ptp_interface(&ptp4l_config);
+    let Some(ifindex) = ptp_iface.ifindex else {
+        let name = ptp_iface.name.as_deref().unwrap_or("(none)");
+        eprintln!("browse: PTP interface {name} missing or has no ifindex");
+        std::process::exit(1);
+    };
+
+    let avahi = match SystemAvahi::connect().await {
+        Ok(client) => client,
+        Err(e) => {
+            eprintln!("browse: Avahi unavailable: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let (devices, sessions) = match avahi.discover_peers(ifindex, settle).await {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("browse: discovery failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let (matched, orphans) = group_by_endpoint(&devices, &sessions);
+    let describe_targets: Vec<_> = matched
+        .iter()
+        .flat_map(|(_, sess)| sess.iter())
+        .chain(orphans.iter())
+        .cloned()
+        .collect();
+    let (summaries, raw_bodies) = describe_all_peers(&describe_targets, dump_sdp).await;
+
+    let report = build_browse_report(&matched, &orphans, &summaries);
+    if dump_sdp {
+        print!("{}", format_report_with_sdp_dumps(&report, &raw_bodies));
+    } else {
+        print!("{}", format_browse_report(&report));
     }
     Ok(())
 }
@@ -167,6 +246,25 @@ async fn run_daemon(
             Box::new(RecordingPipewire::new(config.graph.rate))
         }
     };
+
+    let discovery_map = new_shared_map();
+    let discovery_wanted = new_shared_wanted();
+    let discovery_ifindex = new_shared_ifindex();
+    let discovery_timing = new_shared_timing(DiscoveryTiming::from_ms(
+        config.discovery.settle_ms,
+        config.discovery.period_ms,
+    ));
+    {
+        *discovery_ifindex.lock().unwrap() = ptp_iface.ifindex;
+        *discovery_wanted.lock().unwrap() = wanted_sink_keys(&config);
+    }
+    spawn_discovery_task(
+        Arc::clone(&discovery_map),
+        Arc::clone(&discovery_wanted),
+        Arc::clone(&discovery_ifindex),
+        Arc::clone(&discovery_timing),
+    );
+
     let mut reload_config = false;
     info!(
         "startup: opening ptp4l management UDS (media rate={})",
@@ -195,6 +293,10 @@ async fn run_daemon(
             &shared_states,
             &shared_ptp,
             &describe,
+            &discovery_map,
+            &discovery_wanted,
+            &discovery_ifindex,
+            &discovery_timing,
         )?;
         reload_config = false;
 
@@ -412,6 +514,15 @@ fn read_ifindex(name: &str) -> Option<i32> {
     }
 }
 
+/// Sink config pairs the discovery task should try to resolve.
+fn wanted_sink_keys(config: &Config) -> HashSet<SessionKey> {
+    config
+        .sink
+        .iter()
+        .map(|s| (s.device.clone(), s.stream.clone()))
+        .collect()
+}
+
 /// One control-plane iteration: optional config reload, PTP query, qualify, reconcile, DESCRIBE.
 #[allow(clippy::too_many_arguments)]
 fn tick(
@@ -432,11 +543,25 @@ fn tick(
     shared_states: &Arc<Mutex<Vec<StreamState>>>,
     shared_ptp: &Arc<Mutex<PtpState>>,
     describe: &obake_ravenna::rtsp::SharedDescribeTable,
+    discovery_map: &SharedDiscoveryMap,
+    discovery_wanted: &SharedWantedKeys,
+    discovery_ifindex: &SharedIfindex,
+    discovery_timing: &SharedDiscoveryTiming,
 ) -> Result<(), Box<dyn std::error::Error>> {
     debug!("tick: begin");
 
     if reload_config {
         reload_stream_config(config_path, config);
+    }
+
+    // Keep discovery task in sync with config and PTP ifindex (no DESCRIBE here).
+    {
+        *discovery_ifindex.lock().unwrap() = ptp_iface.ifindex;
+        *discovery_wanted.lock().unwrap() = wanted_sink_keys(config);
+        *discovery_timing.lock().unwrap() = DiscoveryTiming::from_ms(
+            config.discovery.settle_ms,
+            config.discovery.period_ms,
+        );
     }
 
     debug!("tick: querying ptp4l management socket");
@@ -463,12 +588,7 @@ fn tick(
         *shared_ptp.lock().unwrap() = ptp;
     }
 
-    let browse_ifindex = ptp_iface.ifindex.unwrap_or(-1);
-    let browse_req = browse_ravenna(browse_ifindex);
-    if let Err(e) = avahi.browse(&browse_req) {
-        warn!("mdns: browse failed: {e}");
-    }
-    let discovered = HashMap::new();
+    let discovered = discovery_map.lock().unwrap().clone();
     debug!("tick: discovery results count={}", discovered.len());
 
     let hold_ok = lock_hold_satisfied(

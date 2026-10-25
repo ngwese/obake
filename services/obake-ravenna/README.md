@@ -96,7 +96,7 @@ non-`global` section in `/home/obake/.config/linuxptp/ptp4l.cfg`.
 | `payload-too-large` | audio payload exceeds 1440 bytes |
 | `bad-payload-type` | payload type outside 96..=127 |
 | `interface-missing` | `ptp4l` interface is absent or still a placeholder |
-| `device-absent` | sink device/stream not discovered |
+| `device-absent` | sink device/stream not yet in the discovery cache (mDNS/DESCRIBE) |
 | `unicast-sdp` | remote SDP connection address is not multicast |
 | `rate-mismatch` | remote SDP rate differs from the configured rate |
 | `domain-mismatch` | remote SDP PTP domain differs from local `ptp4l` |
@@ -106,7 +106,16 @@ non-`global` section in `/home/obake/.config/linuxptp/ptp4l.cfg`.
 ```
 obake-ravenna run
 obake-ravenna status
+obake-ravenna browse
 ```
+
+`browse` is a one-shot diagnostic. It does not need the session daemon.
+It waits on the PTP NIC (from `--ptp4l-config`, default 3s settle via
+`--timeout`) for RAVENNA device and session mDNS, DESCRIBEs each
+session (`path=` from TXT, else `/by-name/<session>`, percent-encoded),
+and prints format, rate/channels, frames, and multicast group:port.
+`--dump-sdp` prints the raw DESCRIBE body after each session. See
+`REFERENCE_GUIDE.md` §3.
 
 Logging uses `env_logger`. Default filter is `info` (also set on the user
 unit). For full traces including PTP TLVs, discovery, and each tick:

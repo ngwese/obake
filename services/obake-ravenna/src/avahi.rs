@@ -13,10 +13,16 @@
 //! - Sessions advertise `_rtsp._tcp` with subtype
 //!   `_ravenna_session._sub._rtsp._tcp`.
 
+use crate::browse::ResolvedPeer;
+use futures_util::StreamExt;
 use log::{debug, info, warn};
 use std::collections::HashMap;
+use std::net::Ipv4Addr;
+use std::time::Duration;
+use zbus::fdo::DBusProxy;
+use zbus::message::Type as MessageType;
 use zbus::zvariant::OwnedObjectPath;
-use zbus::Connection;
+use zbus::{Connection, MatchRule, MessageStream};
 
 /// Browse type for RAVENNA **nodes** (device lists).
 pub const RAVENNA_SERVICE_TYPE: &str = "_ravenna._sub._rtsp._tcp";
@@ -36,7 +42,7 @@ const GROUP_IFACE: &str = "org.freedesktop.Avahi.EntryGroup";
 const PROTO_INET: i32 = 0;
 
 /// Kind of RAVENNA DNS-SD registration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PublishKind {
     /// Node RTSP service (`_ravenna` subtype) for device discovery.
     Node,
@@ -117,6 +123,25 @@ pub fn browse_ravenna(interface_index: i32) -> BrowseRequest {
         service_type: RAVENNA_SERVICE_TYPE.to_string(),
         interface_index,
     }
+}
+
+/// Build a browse call for RAVENNA RTSP **sessions** on one interface.
+pub fn browse_ravenna_sessions(interface_index: i32) -> BrowseRequest {
+    BrowseRequest {
+        service_type: RAVENNA_SESSION_SERVICE_TYPE.to_string(),
+        interface_index,
+    }
+}
+
+/// One DNS-SD hit collected during a settle window (before ResolveService).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BrowseHit {
+    kind: PublishKind,
+    interface: i32,
+    protocol: i32,
+    name: String,
+    service_type: String,
+    domain: String,
 }
 
 /// Trait so the daemon can swap a D-Bus client for a test double.
@@ -323,6 +348,235 @@ impl SystemAvahi {
         info!("mdns: unpublished kind={kind:?} name={name}");
         Ok(())
     }
+
+    /// One-shot browse of RAVENNA nodes and sessions on `ifindex`.
+    ///
+    /// Starts ServiceBrowsers for both subtypes, collects `ItemNew` for
+    /// `settle`, resolves each hit to IPv4+port+TXT, then frees the browsers.
+    /// Returns `(devices, sessions)`.
+    pub async fn discover_peers(
+        &self,
+        ifindex: i32,
+        settle: Duration,
+    ) -> Result<(Vec<ResolvedPeer>, Vec<ResolvedPeer>), String> {
+        if ifindex <= 0 {
+            return Err(format!("invalid Avahi interface index {ifindex}"));
+        }
+        let hits = self.collect_browse_hits(ifindex, settle).await?;
+        let mut devices = Vec::new();
+        let mut sessions = Vec::new();
+        for hit in hits {
+            match self.resolve_hit(&hit).await {
+                Ok(peer) => match hit.kind {
+                    PublishKind::Node => devices.push(peer),
+                    PublishKind::Session => sessions.push(peer),
+                },
+                Err(e) => warn!(
+                    "mdns: resolve kind={:?} name={} failed: {e}",
+                    hit.kind, hit.name
+                ),
+            }
+        }
+        devices.sort_by(|a, b| a.name.cmp(&b.name));
+        sessions.sort_by(|a, b| a.name.cmp(&b.name));
+        debug!(
+            "mdns: discover devices={} sessions={} ifindex={ifindex}",
+            devices.len(),
+            sessions.len()
+        );
+        Ok((devices, sessions))
+    }
+
+    async fn service_browser_new(
+        &self,
+        ifindex: i32,
+        service_type: &str,
+    ) -> Result<OwnedObjectPath, String> {
+        self.conn
+            .call_method(
+                Some(AVAHI_DEST),
+                "/",
+                Some(SERVER_IFACE),
+                "ServiceBrowserNew",
+                &(ifindex, PROTO_INET, service_type, "", 0u32),
+            )
+            .await
+            .map_err(|e| format!("ServiceBrowserNew({service_type}): {e}"))?
+            .body()
+            .deserialize()
+            .map_err(|e| format!("ServiceBrowserNew body: {e}"))
+    }
+
+    async fn free_browser(&self, path: &OwnedObjectPath) -> Result<(), String> {
+        self.conn
+            .call_method(
+                Some(AVAHI_DEST),
+                path,
+                Some("org.freedesktop.Avahi.ServiceBrowser"),
+                "Free",
+                &(),
+            )
+            .await
+            .map_err(|e| format!("ServiceBrowser.Free: {e}"))?;
+        Ok(())
+    }
+
+    async fn collect_browse_hits(
+        &self,
+        ifindex: i32,
+        settle: Duration,
+    ) -> Result<Vec<BrowseHit>, String> {
+        let node_path = self
+            .service_browser_new(ifindex, RAVENNA_SERVICE_TYPE)
+            .await?;
+        let session_path = self
+            .service_browser_new(ifindex, RAVENNA_SESSION_SERVICE_TYPE)
+            .await?;
+        debug!(
+            "mdns: browsers node={} session={} settle={}ms",
+            node_path,
+            session_path,
+            settle.as_millis()
+        );
+
+        let dbus = DBusProxy::new(&self.conn)
+            .await
+            .map_err(|e| format!("DBusProxy: {e}"))?;
+        let rule = MatchRule::builder()
+            .msg_type(MessageType::Signal)
+            .interface("org.freedesktop.Avahi.ServiceBrowser")
+            .map_err(|e| format!("match interface: {e}"))?
+            .member("ItemNew")
+            .map_err(|e| format!("match member: {e}"))?
+            .build();
+        dbus.add_match_rule(rule.clone())
+            .await
+            .map_err(|e| format!("AddMatch: {e}"))?;
+
+        let mut stream = MessageStream::from(&self.conn);
+        let mut hits: HashMap<(PublishKind, String), BrowseHit> = HashMap::new();
+        let deadline = tokio::time::Instant::now() + settle;
+
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            let remaining = deadline - now;
+            match tokio::time::timeout(remaining, stream.next()).await {
+                Ok(Some(Ok(msg))) => {
+                    if msg.message_type() != MessageType::Signal {
+                        continue;
+                    }
+                    let header = msg.header();
+                    let member = header.member().map(|m| m.as_str().to_string());
+                    if member.as_deref() != Some("ItemNew") {
+                        continue;
+                    }
+                    let path = match header.path() {
+                        Some(p) => p.as_str().to_string(),
+                        None => continue,
+                    };
+                    let kind = if path == node_path.as_str() {
+                        PublishKind::Node
+                    } else if path == session_path.as_str() {
+                        PublishKind::Session
+                    } else {
+                        continue;
+                    };
+                    let body: (i32, i32, String, String, String, u32) = match msg.body().deserialize()
+                    {
+                        Ok(b) => b,
+                        Err(e) => {
+                            debug!("mdns: ItemNew body: {e}");
+                            continue;
+                        }
+                    };
+                    let (iface, protocol, name, service_type, domain, _flags) = body;
+                    hits.insert(
+                        (kind, name.clone()),
+                        BrowseHit {
+                            kind,
+                            interface: iface,
+                            protocol,
+                            name,
+                            service_type,
+                            domain,
+                        },
+                    );
+                }
+                Ok(Some(Err(e))) => {
+                    let _ = dbus.remove_match_rule(rule).await;
+                    let _ = self.free_browser(&node_path).await;
+                    let _ = self.free_browser(&session_path).await;
+                    return Err(format!("mdns signal stream: {e}"));
+                }
+                Ok(None) => break,
+                Err(_) => break,
+            }
+        }
+
+        let _ = dbus.remove_match_rule(rule).await;
+        let _ = self.free_browser(&node_path).await;
+        let _ = self.free_browser(&session_path).await;
+        Ok(hits.into_values().collect())
+    }
+
+    async fn resolve_hit(&self, hit: &BrowseHit) -> Result<ResolvedPeer, String> {
+        // ResolveService → interface, protocol, name, type, domain, host,
+        // aprotocol, address, port, txt, flags
+        let reply = self
+            .conn
+            .call_method(
+                Some(AVAHI_DEST),
+                "/",
+                Some(SERVER_IFACE),
+                "ResolveService",
+                &(
+                    hit.interface,
+                    hit.protocol,
+                    hit.name.as_str(),
+                    hit.service_type.as_str(),
+                    hit.domain.as_str(),
+                    PROTO_INET,
+                    0u32,
+                ),
+            )
+            .await
+            .map_err(|e| format!("ResolveService({}): {e}", hit.name))?;
+        let body: (
+            i32,
+            i32,
+            String,
+            String,
+            String,
+            String,
+            i32,
+            String,
+            u16,
+            Vec<Vec<u8>>,
+            u32,
+        ) = reply
+            .body()
+            .deserialize()
+            .map_err(|e| format!("ResolveService body: {e}"))?;
+        let (_iface, _proto, name, _ty, _domain, _host, _aproto, address, port, txt, _flags) =
+            body;
+        let address: Ipv4Addr = address
+            .parse()
+            .map_err(|_| format!("ResolveService address not IPv4: {address}"))?;
+        debug!(
+            "mdns: resolved kind={:?} name={name} {address}:{port} txt={}",
+            hit.kind,
+            txt.len()
+        );
+        Ok(ResolvedPeer {
+            name,
+            address,
+            port,
+            txt,
+        })
+    }
 }
 
 impl AvahiClient for SystemAvahi {
@@ -396,5 +650,27 @@ mod tests {
         let req = browse_ravenna(2);
         assert_eq!(req.service_type, RAVENNA_SERVICE_TYPE);
         assert_eq!(req.interface_index, 2);
+    }
+
+    #[test]
+    fn browse_sessions_uses_ravenna_session_type() {
+        let req = browse_ravenna_sessions(2);
+        assert_eq!(req.service_type, RAVENNA_SESSION_SERVICE_TYPE);
+        assert_eq!(req.interface_index, 2);
+    }
+
+    #[test]
+    fn recording_avahi_records_both_browse_requests() {
+        let mut client = RecordingAvahi::default();
+        client.browse(&browse_ravenna(3)).unwrap();
+        client.browse(&browse_ravenna_sessions(3)).unwrap();
+        assert_eq!(client.browsed.len(), 2);
+        assert_eq!(client.browsed[0].service_type, RAVENNA_SERVICE_TYPE);
+        assert_eq!(
+            client.browsed[1].service_type,
+            RAVENNA_SESSION_SERVICE_TYPE
+        );
+        assert_eq!(client.browsed[0].interface_index, 3);
+        assert_eq!(client.browsed[1].interface_index, 3);
     }
 }

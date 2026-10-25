@@ -1,13 +1,16 @@
 // SPDX-FileCopyrightText: Copyright 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-//! RTSP server for transmitting RAVENNA sources.
+//! RTSP server for transmitting RAVENNA sources, plus a DESCRIBE client.
 //!
 //! Listens on [`RTSP_PORT`] and answers `OPTIONS` / `DESCRIBE` / `SETUP` /
 //! `PLAY` / `TEARDOWN` for `/by-name/<stream>`. Multicast AES67 peers use
 //! SETUP to learn the group/port (and fill UI "HOST"); audio is already
 //! flowing on the multicast — PLAY is acknowledged without gating TX.
+//!
+//! [`describe_sdp`] is the one-shot client used by `obake-ravenna browse`.
 
+use crate::browse::encode_rtsp_path;
 use crate::qualify::{QualifiedSource, StreamState};
 use crate::sdp;
 use log::{debug, info, warn};
@@ -15,6 +18,8 @@ use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -336,6 +341,153 @@ CSeq: {cseq}\r\n\
     )
 }
 
+/// Failure fetching SDP via RTSP DESCRIBE.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum DescribeClientError {
+    /// TCP connect or read/write failed.
+    #[error("rtsp io: {0}")]
+    Io(String),
+    /// Overall operation exceeded the timeout.
+    #[error("rtsp describe timeout")]
+    Timeout,
+    /// Peer answered with a non-200 status.
+    #[error("rtsp status {0}")]
+    Status(u16),
+    /// Response could not be parsed as RTSP with an SDP body.
+    #[error("rtsp invalid response")]
+    InvalidResponse,
+}
+
+/// Extract the SDP body from a raw DESCRIBE response (headers + body).
+pub fn sdp_body_from_describe_response(raw: &str) -> Result<String, DescribeClientError> {
+    let (header_block, body) = raw
+        .split_once("\r\n\r\n")
+        .ok_or(DescribeClientError::InvalidResponse)?;
+    let status_line = header_block
+        .lines()
+        .next()
+        .ok_or(DescribeClientError::InvalidResponse)?;
+    let mut parts = status_line.split_whitespace();
+    let _version = parts.next().ok_or(DescribeClientError::InvalidResponse)?;
+    let code: u16 = parts
+        .next()
+        .ok_or(DescribeClientError::InvalidResponse)?
+        .parse()
+        .map_err(|_| DescribeClientError::InvalidResponse)?;
+    if code != 200 {
+        return Err(DescribeClientError::Status(code));
+    }
+    let mut content_length = None;
+    for line in header_block.lines().skip(1) {
+        if let Some(rest) = line
+            .strip_prefix("Content-Length:")
+            .or_else(|| line.strip_prefix("Content-length:"))
+        {
+            content_length = rest.trim().parse::<usize>().ok();
+        }
+    }
+    if let Some(n) = content_length {
+        let mut body = body.to_string();
+        // Truncate or wait — caller supplies a complete buffer.
+        if body.len() > n {
+            body.truncate(n);
+        }
+        if body.len() < n {
+            return Err(DescribeClientError::InvalidResponse);
+        }
+        return Ok(body);
+    }
+    Ok(body.to_string())
+}
+
+/// DESCRIBE `path` on `addr:port` and return the SDP body.
+pub async fn describe_sdp(
+    addr: Ipv4Addr,
+    port: u16,
+    path: &str,
+    timeout: Duration,
+) -> Result<String, DescribeClientError> {
+    let fut = describe_sdp_inner(addr, port, path);
+    match tokio::time::timeout(timeout, fut).await {
+        Ok(r) => r,
+        Err(_) => Err(DescribeClientError::Timeout),
+    }
+}
+
+async fn describe_sdp_inner(
+    addr: Ipv4Addr,
+    port: u16,
+    path: &str,
+) -> Result<String, DescribeClientError> {
+    let mut stream = TcpStream::connect((addr, port))
+        .await
+        .map_err(|e| DescribeClientError::Io(e.to_string()))?;
+    // Percent-encode path segments so names with spaces/parens (Merging)
+    // survive RTSP request-line parsing.
+    let path = encode_rtsp_path(path);
+    let req = format!(
+        "DESCRIBE rtsp://{addr}:{port}{path} RTSP/1.0\r\n\
+CSeq: 1\r\n\
+Accept: application/sdp\r\n\
+\r\n"
+    );
+    stream
+        .write_all(req.as_bytes())
+        .await
+        .map_err(|e| DescribeClientError::Io(e.to_string()))?;
+
+    let mut buf = Vec::with_capacity(4096);
+    let mut tmp = [0u8; 1024];
+    let mut header_end = None;
+    let mut content_length = None;
+    loop {
+        let n = stream
+            .read(&mut tmp)
+            .await
+            .map_err(|e| DescribeClientError::Io(e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&tmp[..n]);
+        if header_end.is_none() {
+            if let Some(pos) = find_header_end(&buf) {
+                header_end = Some(pos);
+                let header_text = String::from_utf8_lossy(&buf[..pos]);
+                content_length = parse_content_length(&header_text);
+            }
+        }
+        if let (Some(pos), Some(len)) = (header_end, content_length) {
+            if buf.len() >= pos + 4 + len {
+                break;
+            }
+        } else if header_end.is_some() && content_length.is_none() && n < tmp.len() {
+            // No Content-Length; stop on short read after headers.
+            break;
+        }
+        if buf.len() > 256 * 1024 {
+            return Err(DescribeClientError::InvalidResponse);
+        }
+    }
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    sdp_body_from_describe_response(&text)
+}
+
+fn find_header_end(buf: &[u8]) -> Option<usize> {
+    buf.windows(4).position(|w| w == b"\r\n\r\n")
+}
+
+fn parse_content_length(headers: &str) -> Option<usize> {
+    for line in headers.lines() {
+        if let Some(rest) = line
+            .strip_prefix("Content-Length:")
+            .or_else(|| line.strip_prefix("Content-length:"))
+        {
+            return rest.trim().parse().ok();
+        }
+    }
+    None
+}
+
 fn method_not_allowed_response(cseq: u32) -> String {
     format!(
         "RTSP/1.0 405 Method Not Allowed\r\n\
@@ -435,5 +587,48 @@ Accept: application/sdp\r\n\
         }];
         let table = DescribeTable::from_states(&states);
         assert!(describe_response(&table, "/by-name/obake-out-1", 1).is_none());
+    }
+
+    #[test]
+    fn client_parses_describe_200_body() {
+        let raw = "RTSP/1.0 200 OK\r\n\
+CSeq: 1\r\n\
+Content-Type: application/sdp\r\n\
+Content-Length: 11\r\n\
+\r\n\
+v=0\r\ns=test";
+        let body = sdp_body_from_describe_response(raw).unwrap();
+        assert_eq!(body, "v=0\r\ns=test");
+    }
+
+    #[test]
+    fn client_rejects_non_200() {
+        let raw = "RTSP/1.0 404 Not Found\r\n\
+CSeq: 1\r\n\
+\r\n";
+        assert_eq!(
+            sdp_body_from_describe_response(raw),
+            Err(DescribeClientError::Status(404))
+        );
+    }
+
+    #[tokio::test]
+    async fn client_describe_times_out() {
+        // Bind and never accept — connect succeeds only if something listens.
+        // Use an unused high port with no listener so connect fails quickly,
+        // then wrap with a very short timeout against a blackhole accept.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Do not accept; the client connects then blocks on read until timeout.
+        let err = describe_sdp(
+            Ipv4Addr::new(127, 0, 0, 1),
+            port,
+            "/by-name/x",
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err, DescribeClientError::Timeout);
+        drop(listener);
     }
 }

@@ -7,7 +7,9 @@
 //! without linking PipeWire or talking to Avahi.
 
 pub mod avahi;
+pub mod browse;
 pub mod config;
+pub mod discovery;
 pub mod destination;
 pub mod frame_size;
 pub mod pipewire_nodes;

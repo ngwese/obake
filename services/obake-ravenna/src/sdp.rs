@@ -112,6 +112,12 @@ a=recvonly\r\n",
     )
 }
 
+/// Parse `a=framecount` as a single value or `low-high` range (lower bound).
+pub fn parse_framecount(text: &str) -> Result<u32, ()> {
+    let lower = text.split('-').next().unwrap_or(text).trim();
+    lower.parse().map_err(|_| ())
+}
+
 /// Format `a=ptime` without trailing zeros when possible.
 fn format_ptime(ptime: f64) -> String {
     if (ptime - ptime.round()).abs() < 1e-9 {
@@ -193,10 +199,9 @@ pub fn parse_sdp(text: &str) -> Result<StreamSdp, SdpError> {
                     .map_err(|_| SdpError::Invalid(line.to_string()))?,
             );
         } else if let Some(rest) = line.strip_prefix("a=framecount:") {
-            frame_size = Some(
-                rest.parse()
-                    .map_err(|_| SdpError::Invalid(line.to_string()))?,
-            );
+            // Merging MAD may advertise a range (`48-192`). Use the lower
+            // bound unless a caller specifically needs the full range.
+            frame_size = Some(parse_framecount(rest).map_err(|_| SdpError::Invalid(line.to_string()))?);
         } else if let Some(rest) = line.strip_prefix("a=ts-refclk:ptp=") {
             let domain_str = rest.rsplit(':').next().unwrap_or("");
             domain = Some(
@@ -285,5 +290,24 @@ mod tests {
         // Builder formats whatever it is given; qualify must refuse zeros.
         let gmid = [0u8; 8];
         assert_eq!(format_gmid(&gmid), "00-00-00-00-00-00-00-00");
+    }
+
+    #[test]
+    fn parse_framecount_single_and_range() {
+        assert_eq!(parse_framecount("48").unwrap(), 48);
+        assert_eq!(parse_framecount("48-192").unwrap(), 48);
+        assert!(parse_framecount("nope").is_err());
+    }
+
+    #[test]
+    fn parse_sdp_accepts_merging_framecount_range() {
+        let text = "v=0\r\n\
+c=IN IP4 239.1.60.10/15\r\n\
+m=audio 5004 RTP/AVP 98\r\n\
+a=rtpmap:98 L24/48000/2\r\n\
+a=framecount:48-192\r\n\
+a=ts-refclk:ptp=IEEE1588-2008:00-00-00-00-00-00-00-01:0\r\n";
+        let parsed = parse_sdp(text).unwrap();
+        assert_eq!(parsed.frame_size, 48);
     }
 }

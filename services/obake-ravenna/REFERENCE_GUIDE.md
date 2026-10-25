@@ -29,6 +29,10 @@ node_group = "obake.ravenna"
 lock_hold_ms = 2000
 max_offset_ns = 1000000
 
+[discovery]
+settle_ms = 2000
+period_ms = 5000
+
 [packet]
 frames = 48
 
@@ -73,6 +77,15 @@ Anything else holds every stream down (`bad-sample-rate`).
 | `max_offset_ns` | `1000000` | After the lock-hold dwell, sources and sinks stay held down while the absolute `ptp4l` `master_offset` (nanoseconds) exceeds this value. A failed offset read counts as high. `0` disables the offset gate (lock-hold alone remains). |
 
 Status still reports `ptp: locked` / `ptp: unlocked` from `ptp4l`. While locked but waiting on the dwell, streams show `held-down (lock-hold)`. While locked and past the dwell but offset is high, streams show `held-down (offset-high)`.
+
+### `[discovery]`
+
+| Key | Default | Effect |
+| --- | --- | --- |
+| `settle_ms` | `2000` | How long each background mDNS browse waits before resolving peers. |
+| `period_ms` | `5000` | Pause between discovery refreshes. DESCRIBE runs only for configured sinks missing from the SDP cache. |
+
+Reload the user service to apply new values. Periodic discover counts log at debug.
 
 ### `[packet]`
 
@@ -137,11 +150,13 @@ the remote `c=` address is in `239.0.0.0/8`, the remote rate equals
 the sink is `device-absent`, `unicast-sdp`, `rate-mismatch`, or
 `domain-mismatch`.
 
-The control loop browses `_ravenna._sub._rtsp._tcp` and then passes an
-empty discovery map into qualify. A configured `[[sink]]` therefore stays
-`device-absent` until peer DESCRIBE results are fed into that map. The
-keys above are the ones that qualify and the RTP source module will use
-once discovery is connected. Transmitters do not depend on it.
+A background discovery task browses RAVENNA devices and sessions on the
+PTP interface and DESCRIBEs each configured `(device, stream)` that is
+not yet in the SDP cache (percent-encoded `/by-name/…` when TXT has no
+`path`). Once a session's SDP is cached, the daemon does **not**
+re-DESCRIBE it on every tick or refresh while that entry remains wanted
+and visible. The control loop only reads the cache into qualify.
+Transmitters do not depend on discovery.
 
 ### Payload size and MTU
 
@@ -275,8 +290,48 @@ and then fetch the SDP in section 2. A source that is held down is not
 published. Removing it from the config, or losing PTP lock, withdraws
 the record.
 
-The daemon also browses `_ravenna._sub._rtsp._tcp` so it can see peer
-nodes. Those browse results are not yet turned into SDP for `[[sink]]`.
+The daemon also browses `_ravenna` and `_ravenna_session` subtypes so
+configured `[[sink]]` rows can obtain peer SDP (see §1). The one-shot
+`browse` command below uses the same DESCRIBE helpers for diagnostics.
+
+### `obake-ravenna browse`
+
+One-shot human diagnostic (no daemon required). It uses the same
+`ptp4l` interface as `run`, waits `--timeout` seconds (default 3) for
+mDNS, then:
+
+1. Browses `_ravenna._sub._rtsp._tcp` (devices) and
+   `_ravenna_session._sub._rtsp._tcp` (sessions).
+2. Resolves each record to IPv4 and port; groups sessions under devices
+   that share that endpoint. Sessions with no matching device appear
+   under `unassigned`.
+3. DESCRIBEs each session. TXT `path=` wins when present; otherwise the
+   path is `/by-name/<session instance name>`. Path segments are
+   percent-encoded on the request line so names with spaces or
+   parentheses (Merging Anubis / MAD) parse correctly.
+4. Prints a summary line per session: format, sample rate / channel
+   count, frame size, and multicast group:port. A `a=framecount` range
+   such as `48-192` is reported as the lower bound. A failed DESCRIBE
+   or bad SDP still lists the session with `describe-failed` or
+   `sdp-invalid`. With `--dump-sdp`, the unmodified DESCRIBE body is
+   printed after each session that returned one.
+
+Example:
+
+```
+device  Anubis-Main  192.168.60.10:8554
+  session  PGM-1  L24 48000/8  frames=48  239.1.0.1:5004
+```
+
+```
+obake-ravenna browse
+obake-ravenna browse --timeout 5
+obake-ravenna browse --dump-sdp
+obake-ravenna browse --ptp4l-config /home/obake/.config/linuxptp/ptp4l.cfg
+```
+
+Exits non-zero when the PTP interface is missing or Avahi is
+unavailable. A successful scan with zero peers still exits 0.
 
 ## 4. Session-level PipeWire objects
 

@@ -16,6 +16,11 @@ node_group = "obake.ravenna"
 # lock_hold_ms = 2000
 # max_offset_ns = 1000000
 
+# Peer discovery for [[sink]]: mDNS settle and refresh period (ms).
+# [discovery]
+# settle_ms = 2000
+# period_ms = 5000
+
 # RTP frames per packet (not the PipeWire quantum).
 [packet]
 frames = 48

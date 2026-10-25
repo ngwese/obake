@@ -651,6 +651,7 @@ dependencies = [
  "bytes",
  "clap",
  "env_logger",
+ "futures-util",
  "libc",
  "log",
  "pipewire",

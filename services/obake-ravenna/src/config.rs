@@ -85,12 +85,31 @@ impl Default for PacketConfig {
     }
 }
 
+/// How unpinned sources pick their multicast group and RTP port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MulticastAllocation {
+    /// Shared `[multicast].address`; ports step `base_port + 2 * index`.
+    #[default]
+    Port,
+    /// Merging-style groups from the PTP unicast; shared `base_port`.
+    Merging,
+}
+
 /// Transmit multicast base address and port stepping.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct MulticastConfig {
-    /// Shared multicast group for transmitting sources.
-    pub address: String,
-    /// Even base RTP port; source `i` uses `base_port + 2 * i`.
+    /// Allocator for unpinned sources. Omitted means [`MulticastAllocation::Port`].
+    #[serde(default)]
+    pub allocation: MulticastAllocation,
+    /// Shared multicast group for [`MulticastAllocation::Port`] sources.
+    /// Forbidden when [`MulticastAllocation::Merging`].
+    #[serde(default)]
+    pub address: Option<String>,
+    /// First session octet under [`MulticastAllocation::Merging`] (default 1).
+    #[serde(default = "default_session_base")]
+    pub session_base: u8,
+    /// Even base RTP port. Port mode steps by index; merging keeps this port.
     #[serde(default = "default_base_port")]
     pub base_port: u16,
     /// IP TTL for transmitters; defaults to 15 when omitted.
@@ -100,6 +119,10 @@ pub struct MulticastConfig {
 
 fn default_base_port() -> u16 {
     DEFAULT_RTP_PORT
+}
+
+fn default_session_base() -> u8 {
+    1
 }
 
 /// One configured multicast transmitter (local → network).
@@ -256,12 +279,12 @@ impl Config {
         Self::from_str(&fs::read_to_string(path)?)
     }
 
-    /// Require `[multicast]` when any source is configured; check base port.
+    /// Require `[multicast]` when any source is configured; check mode rules.
     fn validate(&self) -> Result<(), ConfigError> {
         if !self.source.is_empty() {
             let Some(mc) = &self.multicast else {
                 return Err(ConfigError::Invalid(
-                    "missing [multicast] address (required when [[source]] is present)".into(),
+                    "missing [multicast] (required when [[source]] is present)".into(),
                 ));
             };
             if mc.base_port % 2 != 0 {
@@ -270,13 +293,29 @@ impl Config {
                     mc.base_port
                 )));
             }
-            MulticastDestination::new(
-                mc.address
-                    .parse::<Ipv4Addr>()
-                    .map_err(|e| ConfigError::Invalid(format!("multicast.address: {e}")))?,
-                mc.base_port,
-            )
-            .map_err(|e| ConfigError::Invalid(format!("multicast.address: {e}")))?;
+            match mc.allocation {
+                MulticastAllocation::Port => {
+                    let Some(address) = mc.address.as_deref() else {
+                        return Err(ConfigError::Invalid(
+                            "multicast.address is required when allocation is port".into(),
+                        ));
+                    };
+                    MulticastDestination::new(
+                        address.parse::<Ipv4Addr>().map_err(|e| {
+                            ConfigError::Invalid(format!("multicast.address: {e}"))
+                        })?,
+                        mc.base_port,
+                    )
+                    .map_err(|e| ConfigError::Invalid(format!("multicast.address: {e}")))?;
+                }
+                MulticastAllocation::Merging => {
+                    if mc.address.is_some() {
+                        return Err(ConfigError::Invalid(
+                            "multicast.address is forbidden when allocation is merging".into(),
+                        ));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -290,32 +329,62 @@ impl Config {
     }
 
     /// Resolve the multicast destination for source at `index`.
+    ///
+    /// `source_ip` is the PTP interface IPv4. Required for unpinned sources
+    /// under [`MulticastAllocation::Merging`].
     pub fn resolve_source_destination(
         &self,
         index: usize,
         src: &SourceConfig,
+        source_ip: Option<Ipv4Addr>,
     ) -> Result<MulticastDestination, DestinationError> {
         let mc = self.multicast.as_ref().ok_or_else(|| {
             DestinationError::Parse("missing [multicast]".into())
         })?;
         let group: Ipv4Addr = match &src.address {
             Some(a) => a.parse().map_err(|_| DestinationError::Parse(a.clone()))?,
-            None => mc
-                .address
-                .parse()
-                .map_err(|_| DestinationError::Parse(mc.address.clone()))?,
+            None => match mc.allocation {
+                MulticastAllocation::Port => {
+                    let address = mc.address.as_ref().ok_or_else(|| {
+                        DestinationError::Parse("missing multicast.address".into())
+                    })?;
+                    address
+                        .parse()
+                        .map_err(|_| DestinationError::Parse(address.clone()))?
+                }
+                MulticastAllocation::Merging => {
+                    let ip = source_ip.ok_or_else(|| {
+                        DestinationError::Parse("missing PTP interface IPv4".into())
+                    })?;
+                    let session = mc
+                        .session_base
+                        .checked_add(
+                            u8::try_from(index).map_err(|_| {
+                                DestinationError::Parse("source index overflow".into())
+                            })?,
+                        )
+                        .ok_or_else(|| {
+                            DestinationError::Parse("session octet overflow".into())
+                        })?;
+                    let o = ip.octets();
+                    Ipv4Addr::new(239, session, o[2], o[3])
+                }
+            },
         };
         let port = match src.port {
             Some(p) => p,
-            None => {
-                let step = u16::try_from(index)
-                    .ok()
-                    .and_then(|i| i.checked_mul(2))
-                    .ok_or_else(|| DestinationError::Parse("source index overflow".into()))?;
-                mc.base_port
-                    .checked_add(step)
-                    .ok_or_else(|| DestinationError::Parse("port overflow".into()))?
-            }
+            None => match mc.allocation {
+                MulticastAllocation::Port => {
+                    let step = u16::try_from(index)
+                        .ok()
+                        .and_then(|i| i.checked_mul(2))
+                        .ok_or_else(|| DestinationError::Parse("source index overflow".into()))?;
+                    mc.base_port
+                        .checked_add(step)
+                        .ok_or_else(|| DestinationError::Parse("port overflow".into()))?
+                }
+                MulticastAllocation::Merging => mc.base_port,
+            },
         };
         MulticastDestination::new(group, port)
     }
@@ -395,13 +464,15 @@ stream = "Anubis_Combo 1/2"
         assert_eq!(cfg.discovery.settle_ms, DEFAULT_DISCOVERY_SETTLE_MS);
         assert_eq!(cfg.discovery.period_ms, DEFAULT_DISCOVERY_PERIOD_MS);
         let mc = cfg.multicast.as_ref().unwrap();
-        assert_eq!(mc.address, "239.1.60.50");
+        assert_eq!(mc.allocation, MulticastAllocation::Port);
+        assert_eq!(mc.address.as_deref(), Some("239.1.60.50"));
+        assert_eq!(mc.session_base, 1);
         assert_eq!(mc.base_port, 5004);
         assert_eq!(mc.ttl, Some(15));
         assert_eq!(cfg.source.len(), 1);
         assert_eq!(cfg.sink.len(), 1);
         let dest = cfg
-            .resolve_source_destination(0, &cfg.source[0])
+            .resolve_source_destination(0, &cfg.source[0], None)
             .unwrap();
         assert_eq!(dest.group, Ipv4Addr::new(239, 1, 60, 50));
         assert_eq!(dest.port, 5004);
@@ -529,13 +600,13 @@ format = "L16"
 "#;
         let cfg = Config::from_str(text).unwrap();
         assert_eq!(
-            cfg.resolve_source_destination(0, &cfg.source[0])
+            cfg.resolve_source_destination(0, &cfg.source[0], None)
                 .unwrap()
                 .port,
             5004
         );
         assert_eq!(
-            cfg.resolve_source_destination(1, &cfg.source[1])
+            cfg.resolve_source_destination(1, &cfg.source[1], None)
                 .unwrap()
                 .port,
             5006
@@ -558,10 +629,166 @@ port = 5010
 "#;
         let cfg = Config::from_str(text).unwrap();
         let dest = cfg
-            .resolve_source_destination(0, &cfg.source[0])
+            .resolve_source_destination(0, &cfg.source[0], None)
             .unwrap();
         assert_eq!(dest.group, Ipv4Addr::new(239, 1, 60, 51));
         assert_eq!(dest.port, 5010);
+    }
+
+    #[test]
+    fn omitted_allocation_is_port() {
+        let text = r#"
+[multicast]
+address = "239.1.60.50"
+base_port = 5004
+
+[[source]]
+name = "x"
+channels = 2
+format = "L16"
+"#;
+        let cfg = Config::from_str(text).unwrap();
+        assert_eq!(
+            cfg.multicast.as_ref().unwrap().allocation,
+            MulticastAllocation::Port
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_allocation() {
+        let text = r#"
+[multicast]
+allocation = "address"
+address = "239.1.60.50"
+base_port = 5004
+
+[[source]]
+name = "x"
+channels = 2
+format = "L16"
+"#;
+        assert!(Config::from_str(text).is_err());
+    }
+
+    #[test]
+    fn rejects_address_with_merging() {
+        let text = r#"
+[multicast]
+allocation = "merging"
+address = "239.1.60.50"
+base_port = 5004
+
+[[source]]
+name = "x"
+channels = 2
+format = "L16"
+"#;
+        let err = Config::from_str(text).unwrap_err();
+        assert!(matches!(err, ConfigError::Invalid(_)));
+        assert!(err.to_string().contains("forbidden"));
+    }
+
+    #[test]
+    fn merging_derives_groups_from_unicast() {
+        let text = r#"
+[multicast]
+allocation = "merging"
+session_base = 1
+base_port = 5004
+
+[[source]]
+name = "a"
+channels = 2
+format = "L16"
+
+[[source]]
+name = "b"
+channels = 2
+format = "L16"
+"#;
+        let cfg = Config::from_str(text).unwrap();
+        let ip = Ipv4Addr::new(192, 168, 60, 50);
+        let a = cfg
+            .resolve_source_destination(0, &cfg.source[0], Some(ip))
+            .unwrap();
+        let b = cfg
+            .resolve_source_destination(1, &cfg.source[1], Some(ip))
+            .unwrap();
+        assert_eq!(a.group, Ipv4Addr::new(239, 1, 60, 50));
+        assert_eq!(a.port, 5004);
+        assert_eq!(b.group, Ipv4Addr::new(239, 2, 60, 50));
+        assert_eq!(b.port, 5004);
+    }
+
+    #[test]
+    fn merging_holds_without_source_ip() {
+        let text = r#"
+[multicast]
+allocation = "merging"
+base_port = 5004
+
+[[source]]
+name = "a"
+channels = 2
+format = "L16"
+"#;
+        let cfg = Config::from_str(text).unwrap();
+        assert!(cfg
+            .resolve_source_destination(0, &cfg.source[0], None)
+            .is_err());
+    }
+
+    #[test]
+    fn merging_session_overflow_holds() {
+        let text = r#"
+[multicast]
+allocation = "merging"
+session_base = 255
+base_port = 5004
+
+[[source]]
+name = "a"
+channels = 2
+format = "L16"
+
+[[source]]
+name = "b"
+channels = 2
+format = "L16"
+"#;
+        let cfg = Config::from_str(text).unwrap();
+        let ip = Ipv4Addr::new(192, 168, 60, 50);
+        assert!(cfg
+            .resolve_source_destination(0, &cfg.source[0], Some(ip))
+            .is_ok());
+        assert!(cfg
+            .resolve_source_destination(1, &cfg.source[1], Some(ip))
+            .is_err());
+    }
+
+    #[test]
+    fn merging_pin_overrides_group() {
+        let text = r#"
+[multicast]
+allocation = "merging"
+base_port = 5004
+
+[[source]]
+name = "a"
+channels = 2
+format = "L16"
+address = "239.9.60.50"
+"#;
+        let cfg = Config::from_str(text).unwrap();
+        let dest = cfg
+            .resolve_source_destination(
+                0,
+                &cfg.source[0],
+                Some(Ipv4Addr::new(192, 168, 60, 50)),
+            )
+            .unwrap();
+        assert_eq!(dest.group, Ipv4Addr::new(239, 9, 60, 50));
+        assert_eq!(dest.port, 5004);
     }
 
     #[test]
@@ -632,7 +859,7 @@ format = "L16"
         assert_eq!(cfg.source.len(), 1);
         assert_eq!(cfg.sink.len(), 1);
         let dest = cfg
-            .resolve_source_destination(0, &cfg.source[0])
+            .resolve_source_destination(0, &cfg.source[0], None)
             .unwrap();
         assert_eq!(dest.group, Ipv4Addr::new(239, 1, 60, 50));
         assert_eq!(dest.port, 5004);

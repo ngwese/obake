@@ -108,9 +108,20 @@ the SDP.
 
 | Key | Default | Effect |
 | --- | --- | --- |
-| `address` | required with sources | IPv4 group in `239.0.0.0/8` shared by sources that do not pin their own address. SDP `c=` and the RTP destination use it. |
-| `base_port` | `5004` | Even RTP port for source 0. Source `i` uses `base_port + 2*i` unless that source pins `port`. The odd port (`port+1`) is the RTCP pair in the RTSP `Transport` line. |
+| `allocation` | `port` | How unpinned sources pick group and port. `port` shares one group and steps the RTP port. `merging` mimics Merging devices: one shared port and a distinct group per source derived from the PTP unicast. |
+| `address` | required for `port` | IPv4 group in `239.0.0.0/8` shared by sources that do not pin their own address. Forbidden when `allocation = "merging"`. |
+| `session_base` | `1` | First session octet under `merging` (`session_base + source index`). Ignored under `port`. |
+| `base_port` | `5004` | Even RTP port. Under `port`, source `i` uses `base_port + 2*i` unless it pins `port`. Under `merging`, every unpinned source uses `base_port`. The odd port (`port+1`) is the RTCP pair in the RTSP `Transport` line. |
 | `ttl` | `15` | IPv4 multicast TTL on transmitted packets and on SDP `c=` (`address/ttl`). |
+
+Under `merging`, an unpinned source at index `i` on PTP address
+`A.B.C.D` transmits to `239.{session_base+i}.C.D` at `base_port`. Example
+with `session_base = 1` and host `192.168.60.50`:
+
+```
+source 0 -> 239.1.60.50:5004
+source 1 -> 239.2.60.50:5004
+```
 
 `239.255.255.255` is rejected (SAP announcement group). An odd
 `base_port` or odd pinned `port` is rejected. Two sources that resolve
@@ -124,8 +135,8 @@ to the same group and port are both held down (`duplicate-destination`).
 | `channels` | yes | Channel count in SDP `a=rtpmap` and in the RTP payload. One input port is created per channel. |
 | `format` | yes | `L16` (16-bit big-endian, 2 bytes/sample, PipeWire `S16BE`) or `L24` (24-bit packed, 3 bytes/sample, PipeWire `S24BE`). |
 | `payload` | no | RTP dynamic payload type, 96 through 127. Default is `96 + channels` (8 channels → 104). Set this when a receiver expects a specific type (Merging devices often use 98). |
-| `address` | no | Pin this source to its own multicast group. Otherwise `[multicast].address`. |
-| `port` | no | Pin an even RTP port. Otherwise `base_port + 2*index`. |
+| `address` | no | Pin this source to its own multicast group. Otherwise the `[multicast]` allocator. |
+| `port` | no | Pin an even RTP port. Otherwise the `[multicast]` allocator. |
 
 A source stays down until `ptp4l` is FOLLOWER, the lock-hold dwell has
 elapsed, the absolute master offset is within `max_offset_ns` (when that
@@ -228,7 +239,7 @@ on purpose. Merging devices read the media-level copies.
 | `v=0` | SDP version. Always 0. | Fixed. |
 | `o=- 0 0 IN IP4 <ip>` | Origin. The username is `-`, the session id and version are 0, and the address is the unicast IPv4 of the PTP interface. Peers use that address as the sender. The id `0` is a legal opaque counter; other hosts use other numbers. | Interface address from `ip addr` on the `ptp4l` NIC. Not a config key. |
 | `s=<name>` | Session name peers display. | `[[source]].name`. |
-| `c=IN IP4 <group>/<ttl>` | Where to listen, and the multicast scope. The `/ttl` suffix is the hop limit. | `[multicast].address` or the source's pinned `address`, and `[multicast].ttl` (default 15). |
+| `c=IN IP4 <group>/<ttl>` | Where to listen, and the multicast scope. The `/ttl` suffix is the hop limit. | The resolved group from `[multicast]` allocation or a source pin, and `[multicast].ttl` (default 15). |
 | `t=0 0` | The session is permanent (no start or stop time). | Fixed. |
 | `a=clock-domain:PTPv2 <domain>` | PTP domain the media clock follows. Anubis shows this as CLOCK DOMAIN. | `ptp4l` domain, not the TOML file. |
 | `a=ts-refclk:ptp=IEEE1588-2008:<gmid>:<domain>` | The grandmaster identity and domain. Receivers lock the stream to this clock. | `ptp4l` parent data set (8-byte clock id, printed as hex bytes) and domain. |
@@ -413,8 +424,8 @@ when `frames` is 48.
 
 ```text
 local.ifname       = "<ptp4l NIC>"          # egress device for the multicast
-destination.ip     = "<group>"              # [multicast].address or source pin
-destination.port   = <even port>            # base_port + 2*index, or source pin
+destination.ip     = "<group>"              # allocation or source pin
+destination.port   = <even port>            # allocation or source pin
 net.mtu            = 1500                   # fixed; payload cap is separate
 net.ttl            = <ttl>                  # [multicast].ttl, default 15
 net.loop           = false                  # do not loop our packets back locally

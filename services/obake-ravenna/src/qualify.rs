@@ -225,7 +225,9 @@ pub fn qualify(input: &QualifyInput<'_>) -> Vec<StreamState> {
 
     for (idx, src) in input.config.source.iter().enumerate() {
         match (
-            input.config.resolve_source_destination(idx, src),
+            input
+                .config
+                .resolve_source_destination(idx, src, input.source_ip),
             Config::resolve_payload(src),
         ) {
             (Ok(dest), Ok(pt)) => {
@@ -305,7 +307,11 @@ fn qualify_source(
 
     let Some((dest, payload_type)) = parsed[idx].clone() else {
         // Distinguish destination vs payload failure.
-        if input.config.resolve_source_destination(idx, src).is_err() {
+        if input
+            .config
+            .resolve_source_destination(idx, src, input.source_ip)
+            .is_err()
+        {
             return down(DownReason::BadDestination);
         }
         return down(DownReason::BadPayloadType);
@@ -383,7 +389,8 @@ fn qualify_sink(input: &QualifyInput<'_>, sink: &SinkConfig, rate: u32) -> Strea
 mod tests {
     use super::*;
     use crate::config::{
-        DiscoveryConfig, GraphConfig, MulticastConfig, PacketConfig, PtpConfig,
+        DiscoveryConfig, GraphConfig, MulticastAllocation, MulticastConfig, PacketConfig,
+        PtpConfig,
     };
 
     fn base_config() -> Config {
@@ -396,7 +403,9 @@ mod tests {
             ptp: PtpConfig::default(),
             discovery: DiscoveryConfig::default(),
             multicast: Some(MulticastConfig {
-                address: "239.1.60.50".into(),
+                allocation: Default::default(),
+                address: Some("239.1.60.50".into()),
+                session_base: 1,
                 base_port: 5004,
                 ttl: None,
             }),
@@ -536,6 +545,56 @@ mod tests {
             other => panic!("expected up, got {other:?}"),
         }
         assert!(matches!(&states[1], StreamState::SinkUp(_)));
+    }
+
+    #[test]
+    fn merging_sources_step_group_not_port() {
+        let mut cfg = base_config();
+        cfg.multicast = Some(MulticastConfig {
+            allocation: MulticastAllocation::Merging,
+            address: None,
+            session_base: 1,
+            base_port: 5004,
+            ttl: None,
+        });
+        cfg.source.push(SourceConfig {
+            name: "obake-out-2".into(),
+            channels: 2,
+            format: Format::L16,
+            payload: None,
+            address: None,
+            port: None,
+        });
+        cfg.sink.clear();
+        let discovered = HashMap::new();
+        let states = qualify(&input(&cfg, &discovered));
+        match (&states[0], &states[1]) {
+            (StreamState::SourceUp(a), StreamState::SourceUp(b)) => {
+                assert_eq!(a.destination.group, Ipv4Addr::new(239, 1, 60, 50));
+                assert_eq!(b.destination.group, Ipv4Addr::new(239, 2, 60, 50));
+                assert_eq!(a.destination.port, 5004);
+                assert_eq!(b.destination.port, 5004);
+            }
+            other => panic!("expected two sources up, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn merging_without_source_ip_holds_interface_missing() {
+        let mut cfg = base_config();
+        cfg.multicast = Some(MulticastConfig {
+            allocation: MulticastAllocation::Merging,
+            address: None,
+            session_base: 1,
+            base_port: 5004,
+            ttl: None,
+        });
+        cfg.sink.clear();
+        let discovered = HashMap::new();
+        let mut qi = input(&cfg, &discovered);
+        qi.source_ip = None;
+        let states = qualify(&qi);
+        assert_eq!(states[0].down_reason(), Some(DownReason::InterfaceMissing));
     }
 
     #[test]

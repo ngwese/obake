@@ -49,9 +49,16 @@ node_group = "obake.ravenna"
 frames = 48
 
 [multicast]
+# allocation = "port"     # default: shared group, stepped ports
 address = "239.1.60.50"
-base_port = 5004          # even; source i uses base_port + 2*i
+base_port = 5004          # even; under port, source i uses base_port + 2*i
 ttl = 15                  # optional, default 15
+
+# Merging-style layout (omit address; groups follow the PTP unicast):
+# [multicast]
+# allocation = "merging"
+# session_base = 1        # source i -> 239.{session_base+i}.{o3}.{o4}
+# base_port = 5004        # shared by all unpinned sources
 
 [[source]]
 name = "obake-out-1"
@@ -67,8 +74,10 @@ device = "Anubis"
 stream = "Anubis_Combo 1/2"
 ```
 
-An empty `[[source]]` / `[[sink]]` list transmits nothing and joins no
-multicast groups (the image seed starts empty).
+`allocation = "merging"` forbids `[multicast].address` and builds
+`239.{session_base+index}.{unicast_octet_3}.{unicast_octet_4}` from the
+PTP interface address. An empty `[[source]]` / `[[sink]]` list transmits
+nothing and joins no multicast groups (the image seed starts empty).
 
 Accepted rates are the AES67 / RAVENNA set: 44100, 48000, 88200, 96000,
 176400, 192000, 352800, and 384000 Hz. The network interface is the

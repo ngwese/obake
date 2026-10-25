@@ -26,9 +26,17 @@ node_group = "obake.ravenna"
 frames = 48
 
 [multicast]
+# allocation = "port"       # default: shared group, stepped ports
 address = "239.1.60.50"
 base_port = 5004
 ttl = 15
+
+# Merging-style (omit address; groups follow the PTP unicast octets):
+# [multicast]
+# allocation = "merging"
+# session_base = 1          # source i -> 239.{1+i}.{o3}.{o4}:5004
+# base_port = 5004
+# ttl = 15
 
 [[source]]
 name = "obake-out-1"

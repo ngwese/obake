@@ -22,6 +22,6 @@
       `systemctl is-enabled` and `is-active` for `systemd-timesyncd.service`
       (do not require NTPSynchronized); wire it into the `run` list. Verify:
       the function exists and is invoked from the main checklist.
-- [ ] 2.2 Rebuild (or reinstall/OTA) an image that includes the change and
+- [x] 2.2 Rebuild (or reinstall/OTA) an image that includes the change and
       run the guest verification suite. Verify: `timesyncd` check passes;
       `systemctl is-enabled systemd-timesyncd` is enabled on the booted host.

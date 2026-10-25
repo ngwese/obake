@@ -27,6 +27,7 @@ node_group = "obake.ravenna"
 
 [ptp]
 lock_hold_ms = 2000
+max_offset_ns = 1000000
 
 [packet]
 frames = 48
@@ -69,8 +70,9 @@ Anything else holds every stream down (`bad-sample-rate`).
 | Key | Default | Effect |
 | --- | --- | --- |
 | `lock_hold_ms` | `2000` | After `ptp4l` becomes FOLLOWER, sources and sinks stay held down until that lock has remained continuously true for this many milliseconds. Any unlock resets the timer. `0` brings media nodes up on the lock edge (previous behavior). |
+| `max_offset_ns` | `1000000` | After the lock-hold dwell, sources and sinks stay held down while the absolute `ptp4l` `master_offset` (nanoseconds) exceeds this value. A failed offset read counts as high. `0` disables the offset gate (lock-hold alone remains). |
 
-Status still reports `ptp: locked` / `ptp: unlocked` from `ptp4l`. While locked but waiting on this dwell, streams show `held-down (lock-hold)`.
+Status still reports `ptp: locked` / `ptp: unlocked` from `ptp4l`. While locked but waiting on the dwell, streams show `held-down (lock-hold)`. While locked and past the dwell but offset is high, streams show `held-down (offset-high)`.
 
 ### `[packet]`
 
@@ -113,12 +115,13 @@ to the same group and port are both held down (`duplicate-destination`).
 | `port` | no | Pin an even RTP port. Otherwise `base_port + 2*index`. |
 
 A source stays down until `ptp4l` is FOLLOWER, the lock-hold dwell has
-elapsed, a non-zero grandmaster identity is known, the PTP interface
-exists and has an IPv4 address, and the packet fits in the payload cap
-below. `obake-ravenna status` prints the reason: `unlocked`,
-`lock-hold`, `no-grandmaster`, `interface-missing`, `bad-destination`,
-`bad-payload-type`, `payload-too-large`, and the others in the README
-table.
+elapsed, the absolute master offset is within `max_offset_ns` (when that
+threshold is non-zero), a non-zero grandmaster identity is known, the
+PTP interface exists and has an IPv4 address, and the packet fits in the
+payload cap below. `obake-ravenna status` prints the reason: `unlocked`,
+`lock-hold`, `offset-high`, `no-grandmaster`, `interface-missing`,
+`bad-destination`, `bad-payload-type`, `payload-too-large`, and the
+others in the README table.
 
 ### `[[sink]]` (network audio toward a local node)
 
@@ -274,6 +277,26 @@ the record.
 
 The daemon also browses `_ravenna._sub._rtsp._tcp` so it can see peer
 nodes. Those browse results are not yet turned into SDP for `[[sink]]`.
+
+### ZMAN record
+
+| Field | Value |
+| --- | --- |
+| Instance name | Same host name as the RTSP node record. |
+| Type | `_http._tcp` |
+| Subtype | `_merging_zman._sub._http._tcp` |
+| Port | 9090 |
+| TXT | Empty. |
+
+This is the service ANEMAN uses for a ZMAN-class device. It is published
+once the listener has bound the PTP interface address, and withdrawn
+when that interface disappears. The listener answers
+`http://<host>:9090/advanced/index.html` with a mock page that names the
+host, and `ws://<host>:9090/cometd/handshake` with a Bayeux handshake
+(`/meta/handshake` returns a client id and `websocket`; `/meta/connect`
+keeps the session open). Stream service channels are not served yet.
+Port 9090 needs no extra capability. `obake-ravenna run --no-zman`
+skips the listener and does not publish this record.
 
 ## 4. Session-level PipeWire objects
 

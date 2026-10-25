@@ -87,6 +87,7 @@ non-`global` section in `/home/obake/.config/linuxptp/ptp4l.cfg`.
 |--------|---------|
 | `unlocked` | `ptp4l` is inactive or not in FOLLOWER |
 | `lock-hold` | FOLLOWER, but continuous lock-hold (`[ptp].lock_hold_ms`) not elapsed |
+| `offset-high` | locked and hold elapsed, but `|master_offset|` exceeds `[ptp].max_offset_ns` (or offset unread) |
 | `no-grandmaster` | no grandmaster identity from `ptp4l` |
 | `bad-sample-rate` | configured rate is not an AES67 / RAVENNA media clock |
 | `bad-frame-size` | frames per packet is not an allowed packet time at the rate |

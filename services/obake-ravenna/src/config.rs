@@ -136,8 +136,15 @@ pub struct SinkConfig {
 /// Default continuous PTP lock dwell before media nodes may come up (ms).
 pub const DEFAULT_LOCK_HOLD_MS: u64 = 2000;
 
+/// Default maximum absolute PTP offset before media nodes may come up (ns).
+pub const DEFAULT_MAX_OFFSET_NS: u64 = 1_000_000;
+
 fn default_lock_hold_ms() -> u64 {
     DEFAULT_LOCK_HOLD_MS
+}
+
+fn default_max_offset_ns() -> u64 {
+    DEFAULT_MAX_OFFSET_NS
 }
 
 /// PTP-related daemon settings (not the `ptp4l` config file).
@@ -147,12 +154,17 @@ pub struct PtpConfig {
     /// sources/sinks qualify. `0` brings media up on the lock edge.
     #[serde(default = "default_lock_hold_ms")]
     pub lock_hold_ms: u64,
+    /// Hold media down while `|master_offset|` exceeds this many nanoseconds.
+    /// `0` disables the offset gate.
+    #[serde(default = "default_max_offset_ns")]
+    pub max_offset_ns: u64,
 }
 
 impl Default for PtpConfig {
     fn default() -> Self {
         Self {
             lock_hold_ms: DEFAULT_LOCK_HOLD_MS,
+            max_offset_ns: DEFAULT_MAX_OFFSET_NS,
         }
     }
 }
@@ -342,6 +354,7 @@ stream = "Anubis_Combo 1/2"
         assert_eq!(cfg.graph.node_group, "obake.ravenna");
         assert_eq!(cfg.packet.frames, 48);
         assert_eq!(cfg.ptp.lock_hold_ms, DEFAULT_LOCK_HOLD_MS);
+        assert_eq!(cfg.ptp.max_offset_ns, DEFAULT_MAX_OFFSET_NS);
         let mc = cfg.multicast.as_ref().unwrap();
         assert_eq!(mc.address, "239.1.60.50");
         assert_eq!(mc.base_port, 5004);
@@ -363,24 +376,45 @@ stream = "Anubis_Combo 1/2"
         assert!(cfg.sink.is_empty());
         assert!(cfg.multicast.is_none());
         assert_eq!(cfg.ptp.lock_hold_ms, DEFAULT_LOCK_HOLD_MS);
+        assert_eq!(cfg.ptp.max_offset_ns, DEFAULT_MAX_OFFSET_NS);
     }
 
     #[test]
     fn absent_ptp_table_defaults_lock_hold() {
         let cfg = Config::from_str("[graph]\nrate = 48000\n").unwrap();
         assert_eq!(cfg.ptp.lock_hold_ms, 2000);
+        assert_eq!(cfg.ptp.max_offset_ns, DEFAULT_MAX_OFFSET_NS);
     }
 
     #[test]
     fn explicit_zero_lock_hold() {
         let cfg = Config::from_str("[ptp]\nlock_hold_ms = 0\n").unwrap();
         assert_eq!(cfg.ptp.lock_hold_ms, 0);
+        assert_eq!(cfg.ptp.max_offset_ns, DEFAULT_MAX_OFFSET_NS);
     }
 
     #[test]
     fn explicit_lock_hold_value() {
         let cfg = Config::from_str("[ptp]\nlock_hold_ms = 5000\n").unwrap();
         assert_eq!(cfg.ptp.lock_hold_ms, 5000);
+    }
+
+    #[test]
+    fn absent_max_offset_uses_default() {
+        let cfg = Config::from_str("[ptp]\nlock_hold_ms = 0\n").unwrap();
+        assert_eq!(cfg.ptp.max_offset_ns, 1_000_000);
+    }
+
+    #[test]
+    fn explicit_zero_max_offset() {
+        let cfg = Config::from_str("[ptp]\nmax_offset_ns = 0\n").unwrap();
+        assert_eq!(cfg.ptp.max_offset_ns, 0);
+    }
+
+    #[test]
+    fn explicit_max_offset_value() {
+        let cfg = Config::from_str("[ptp]\nmax_offset_ns = 50000\n").unwrap();
+        assert_eq!(cfg.ptp.max_offset_ns, 50_000);
     }
 
     #[test]

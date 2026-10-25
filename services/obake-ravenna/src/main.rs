@@ -478,8 +478,14 @@ fn tick(
         config.ptp.lock_hold_ms,
     );
     debug!(
-        "tick: qualify rate={} frames={} locked={} lock_hold={} gmid={:?}",
-        config.graph.rate, config.packet.frames, ptp.locked, hold_ok, ptp.gmid
+        "tick: qualify rate={} frames={} locked={} lock_hold={} master_offset_ns={:?} max_offset_ns={} gmid={:?}",
+        config.graph.rate,
+        config.packet.frames,
+        ptp.locked,
+        hold_ok,
+        ptp.master_offset_ns,
+        config.ptp.max_offset_ns,
+        ptp.gmid
     );
     // Refresh IPv4 each tick so DHCP renewals land in SDP without restart.
     let source_ip = ptp_iface
@@ -492,6 +498,7 @@ fn tick(
         config,
         locked: ptp.locked,
         lock_hold_satisfied: hold_ok,
+        master_offset_ns: ptp.master_offset_ns,
         domain: ptp.domain,
         gmid: ptp.gmid,
         interface_present: ptp_iface.present,

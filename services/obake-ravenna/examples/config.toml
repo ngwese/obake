@@ -10,9 +10,11 @@ rate = 48000
 node_group = "obake.ravenna"
 
 # Continuous FOLLOWER dwell before sources/sinks come up (ms). Default 2000;
-# set 0 for immediate bring-up on lock.
+# set 0 for immediate bring-up on lock. max_offset_ns (default 1000000) holds
+# media while |master_offset| is above that many ns; 0 disables the offset gate.
 # [ptp]
 # lock_hold_ms = 2000
+# max_offset_ns = 1000000
 
 # RTP frames per packet (not the PipeWire quantum).
 [packet]

@@ -663,8 +663,11 @@ SHALL leave an existing file unchanged across boot and image update.
 
 The seeded `ptp4l` configuration SHALL be a client-only AES67/RAVENNA
 profile: domain 0, end-to-end delay, UDPv4, and hardware timestamping.
-It SHALL name no interface the image creates. The seeded `phc2sys`
-options SHALL slew the system clock and SHALL NOT step it.
+It SHALL name no interface the image creates. It SHALL set a non-zero
+`step_threshold` so the PHC may jump when the measured offset exceeds
+that threshold after start (not only on the first servo update). The
+seeded `phc2sys` options SHALL slew the system clock and SHALL NOT step
+it.
 
 #### Scenario: Seed is a client with no real interface
 
@@ -672,6 +675,11 @@ options SHALL slew the system clock and SHALL NOT step it.
 - **THEN** the file selects client-only operation, domain 0, end-to-end
   delay, UDPv4, and hardware timestamping
 - **AND** it does not name an interface the image creates
+
+#### Scenario: Seed steps the PHC on large offset
+
+- **WHEN** the seed creates `/home/obake/.config/linuxptp/ptp4l.cfg`
+- **THEN** the file sets a non-zero `step_threshold`
 
 #### Scenario: Seed does not step the system clock
 

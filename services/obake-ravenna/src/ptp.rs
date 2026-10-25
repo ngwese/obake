@@ -24,8 +24,12 @@ const MGMT_ACTION_RESPONSE: u8 = 0x02;
 const MID_DOMAIN: u16 = 0x2007;
 const MID_PORT_DATA_SET: u16 = 0x2004;
 const MID_PARENT_DATA_SET: u16 = 0x2002;
+/// linuxptp vendor management ID for `TIME_STATUS_NP`.
+const MID_TIME_STATUS_NP: u16 = 0xc000;
 /// Offset of `grandmasterIdentity` in a packed IEEE 1588 parentDS.
 const PARENT_DS_GMID_OFF: usize = 24;
+/// Minimum `TIME_STATUS_NP` payload length for `master_offset` (int64 BE).
+const TIME_STATUS_NP_MIN: usize = 8;
 
 const MGMT_PREFIX_LEN: usize = 48; // header + targetPortIdentity + hops/action
 const TLV_HEADER_LEN: usize = 6; // type + length + id
@@ -42,6 +46,9 @@ pub struct PtpState {
     pub port_state: PortState,
     /// Grandmaster clock identity from PARENT_DATA_SET, if known and non-zero.
     pub gmid: Option<[u8; 8]>,
+    /// Last measured offset from master in nanoseconds (`TIME_STATUS_NP`),
+    /// if the management query succeeded.
+    pub master_offset_ns: Option<i64>,
 }
 
 impl PtpState {
@@ -52,6 +59,7 @@ impl PtpState {
             domain: 0,
             port_state: PortState::Unknown,
             gmid: None,
+            master_offset_ns: None,
         }
     }
 }
@@ -265,6 +273,19 @@ pub fn parse_parent_data_set(data: &[u8]) -> Result<[u8; 8], String> {
     Ok(gmid)
 }
 
+/// Extract `master_offset` (nanoseconds, network byte order) from
+/// `TIME_STATUS_NP`.
+pub fn parse_time_status_np(data: &[u8]) -> Result<i64, String> {
+    if data.len() < TIME_STATUS_NP_MIN {
+        return Err("TIME_STATUS_NP data too short".into());
+    }
+    Ok(i64::from_be_bytes(
+        data[..TIME_STATUS_NP_MIN]
+            .try_into()
+            .expect("slice length checked"),
+    ))
+}
+
 /// Build portDS-sized payload with the given port state (zeros elsewhere).
 pub fn fixture_port_data_set(port_state: PortState) -> [u8; 26] {
     let mut data = [0u8; 26];
@@ -282,6 +303,11 @@ pub fn fixture_parent_data_set(gmid: [u8; 8]) -> [u8; 32] {
     let mut data = [0u8; 32];
     data[PARENT_DS_GMID_OFF..PARENT_DS_GMID_OFF + 8].copy_from_slice(&gmid);
     data
+}
+
+/// Minimal `TIME_STATUS_NP` payload with the given `master_offset` (BE).
+pub fn fixture_time_status_np(master_offset_ns: i64) -> [u8; TIME_STATUS_NP_MIN] {
+    master_offset_ns.to_be_bytes()
 }
 
 /// Persistent UDS client for `ptp4l`'s read-only management socket.
@@ -352,8 +378,8 @@ impl PtpManagementClient {
         Ok(data.to_vec())
     }
 
-    /// Query PORT_DATA_SET, DOMAIN, and PARENT_DATA_SET.
-    /// On PORT_DATA_SET failure, unlocked with no GMID.
+    /// Query PORT_DATA_SET, DOMAIN, PARENT_DATA_SET, and TIME_STATUS_NP.
+    /// On PORT_DATA_SET failure, unlocked with no GMID or offset.
     pub fn query_state(&mut self) -> PtpState {
         let port_data = match self.transact(MID_PORT_DATA_SET) {
             Ok(d) => d,
@@ -392,18 +418,36 @@ impl PtpManagementClient {
                 None
             }
         };
+        let master_offset_ns = match self.transact(MID_TIME_STATUS_NP) {
+            Ok(d) => match parse_time_status_np(&d) {
+                Ok(off) => {
+                    debug!("ptp: master_offset_ns={off}");
+                    Some(off)
+                }
+                Err(e) => {
+                    debug!("ptp: parse TIME_STATUS_NP failed: {e}");
+                    None
+                }
+            },
+            Err(e) => {
+                debug!("ptp: TIME_STATUS_NP failed: {e}");
+                None
+            }
+        };
         let state = PtpState {
             locked: port_state.is_locked(),
             domain,
             port_state,
             gmid,
+            master_offset_ns,
         };
         debug!(
-            "ptp: query result locked={} domain={} port_state={} gmid={:?}",
+            "ptp: query result locked={} domain={} port_state={} gmid={:?} master_offset_ns={:?}",
             state.locked,
             state.domain,
             state.port_state.as_str(),
-            state.gmid
+            state.gmid,
+            state.master_offset_ns
         );
         state
     }
@@ -575,6 +619,7 @@ pub fn parse_pmc_reply(text: &str) -> PtpState {
         domain,
         port_state,
         gmid: None,
+        master_offset_ns: None,
     }
 }
 
@@ -629,6 +674,16 @@ mod tests {
     }
 
     #[test]
+    fn binary_time_status_master_offset() {
+        let data = fixture_time_status_np(-1_234);
+        let msg = build_response(MID_TIME_STATUS_NP, 5, &data);
+        let (id, payload) = parse_management_response(&msg).unwrap();
+        assert_eq!(id, MID_TIME_STATUS_NP);
+        assert_eq!(parse_time_status_np(payload).unwrap(), -1_234);
+        assert!(parse_time_status_np(&[0u8; 7]).is_err());
+    }
+
+    #[test]
     fn get_request_has_expected_mid() {
         let req = build_get_request(MID_PORT_DATA_SET, 7);
         assert_eq!(req.len(), GET_REQUEST_LEN);
@@ -651,7 +706,7 @@ mod tests {
         let done_flag = Arc::clone(&done);
         let server_thread = thread::spawn(move || {
             let mut buf = [0u8; 512];
-            for _ in 0..3 {
+            for _ in 0..4 {
                 let (n, src) = server.recv_from(&mut buf).unwrap();
                 let _ = n;
                 let id = u16::from_be_bytes([buf[52], buf[53]]);
@@ -660,8 +715,12 @@ mod tests {
                     build_response(id, seq, &fixture_port_data_set(PortState::Follower))
                 } else if id == MID_DOMAIN {
                     build_response(id, seq, &fixture_domain_data(0))
-                } else {
+                } else if id == MID_PARENT_DATA_SET {
                     build_response(id, seq, &fixture_parent_data_set(gmid))
+                } else if id == MID_TIME_STATUS_NP {
+                    build_response(id, seq, &fixture_time_status_np(42))
+                } else {
+                    panic!("unexpected mid {id:#x}");
                 };
                 let peer = src.as_pathname().expect("named client socket");
                 server.send_to(&resp, peer).unwrap();
@@ -675,9 +734,47 @@ mod tests {
         assert_eq!(st.port_state, PortState::Follower);
         assert_eq!(st.domain, 0);
         assert_eq!(st.gmid, Some(gmid));
+        assert_eq!(st.master_offset_ns, Some(42));
 
         server_thread.join().unwrap();
         assert!(*done.lock().unwrap());
+    }
+
+    #[test]
+    fn uds_offset_failure_leaves_offset_unset() {
+        let dir = tempdir().unwrap();
+        let server_path = dir.path().join("ptp4l.ro");
+        let client_path = dir.path().join("client.pmc");
+        let server = UnixDatagram::bind(&server_path).unwrap();
+
+        let gmid = [0x00, 0x1d, 0xc1, 0xff, 0xfe, 0x12, 0x34, 0x56];
+        let server_thread = thread::spawn(move || {
+            let mut buf = [0u8; 512];
+            for _ in 0..3 {
+                let (_, src) = server.recv_from(&mut buf).unwrap();
+                let id = u16::from_be_bytes([buf[52], buf[53]]);
+                let seq = u16::from_be_bytes([buf[30], buf[31]]);
+                let resp = if id == MID_PORT_DATA_SET {
+                    build_response(id, seq, &fixture_port_data_set(PortState::Follower))
+                } else if id == MID_DOMAIN {
+                    build_response(id, seq, &fixture_domain_data(0))
+                } else {
+                    build_response(id, seq, &fixture_parent_data_set(gmid))
+                };
+                let peer = src.as_pathname().expect("named client socket");
+                server.send_to(&resp, peer).unwrap();
+            }
+            // Drop the fourth TIME_STATUS_NP request without answering.
+            let _ = server.recv_from(&mut buf);
+        });
+
+        let mut client = PtpManagementClient::open(&server_path, &client_path).unwrap();
+        let st = client.query_state();
+        assert!(st.locked);
+        assert_eq!(st.gmid, Some(gmid));
+        assert_eq!(st.master_offset_ns, None);
+
+        server_thread.join().unwrap();
     }
 
     #[test]

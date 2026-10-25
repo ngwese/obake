@@ -100,6 +100,7 @@ mod tests {
             domain: 0,
             port_state: PortState::Listening,
             gmid: None,
+            master_offset_ns: None,
         };
         let states = [StreamState::SourceDown {
             name: "obake-out-1".into(),
@@ -117,6 +118,7 @@ mod tests {
             domain: 0,
             port_state: PortState::Follower,
             gmid: Some([1, 2, 3, 4, 5, 6, 7, 8]),
+            master_offset_ns: Some(0),
         };
         let states = [StreamState::SourceDown {
             name: "obake-out-1".into(),
@@ -129,12 +131,33 @@ mod tests {
     }
 
     #[test]
+    fn prints_offset_high_while_ptp_locked() {
+        let ptp = PtpState {
+            locked: true,
+            domain: 0,
+            port_state: PortState::Follower,
+            gmid: Some([1, 2, 3, 4, 5, 6, 7, 8]),
+            master_offset_ns: Some(3_900_000_000),
+        };
+        let states = [StreamState::SourceDown {
+            name: "obake-out-1".into(),
+            reason: DownReason::OffsetHigh,
+        }];
+        let text = format_report(&build_report(&ptp, &states));
+        assert!(text.contains("ptp: locked"));
+        assert!(text.contains("source obake-out-1: held-down (offset-high)"));
+        assert!(!text.contains("held-down (unlocked)"));
+        assert!(!text.contains("held-down (lock-hold)"));
+    }
+
+    #[test]
     fn prints_mtu_and_payload_type_reasons() {
         let ptp = PtpState {
             locked: true,
             domain: 0,
             port_state: PortState::Follower,
             gmid: Some([1, 2, 3, 4, 5, 6, 7, 8]),
+            master_offset_ns: Some(0),
         };
         let states = [
             StreamState::SourceDown {

@@ -19,6 +19,9 @@ pub enum DownReason {
     Unlocked,
     /// Locked, but the configured continuous lock-hold has not elapsed.
     LockHold,
+    /// Locked and hold elapsed, but absolute PTP offset exceeds the threshold
+    /// (or the offset could not be read while the threshold is non-zero).
+    OffsetHigh,
     /// No grandmaster clock identity from `ptp4l`.
     NoGrandmaster,
     /// Configured sample rate is not an AES67 / RAVENNA media clock rate.
@@ -51,6 +54,7 @@ impl DownReason {
         match self {
             DownReason::Unlocked => "unlocked",
             DownReason::LockHold => "lock-hold",
+            DownReason::OffsetHigh => "offset-high",
             DownReason::NoGrandmaster => "no-grandmaster",
             DownReason::BadSampleRate => "bad-sample-rate",
             DownReason::BadFrameSize => "bad-frame-size",
@@ -183,6 +187,8 @@ pub struct QualifyInput<'a> {
     pub locked: bool,
     /// True when FOLLOWER has been continuous for the configured lock-hold.
     pub lock_hold_satisfied: bool,
+    /// Absolute PTP offset from master in nanoseconds, if known.
+    pub master_offset_ns: Option<i64>,
     /// Local PTP domain number.
     pub domain: u8,
     /// Grandmaster identity from PARENT_DATA_SET (None if unknown/zero).
@@ -193,6 +199,17 @@ pub struct QualifyInput<'a> {
     pub source_ip: Option<Ipv4Addr>,
     /// Map of `(device, stream)` → SDP from DNS-SD / DESCRIBE.
     pub discovered: &'a HashMap<(String, String), StreamSdp>,
+}
+
+/// True when the offset gate allows media (threshold `0`, or |offset| ≤ max).
+fn offset_within_threshold(offset: Option<i64>, max_offset_ns: u64) -> bool {
+    if max_offset_ns == 0 {
+        return true;
+    }
+    match offset {
+        Some(o) => o.unsigned_abs() <= max_offset_ns,
+        None => false,
+    }
 }
 
 /// Decide up/down for every configured source and sink.
@@ -261,6 +278,9 @@ fn qualify_source(
     if !input.lock_hold_satisfied {
         return down(DownReason::LockHold);
     }
+    if !offset_within_threshold(input.master_offset_ns, input.config.ptp.max_offset_ns) {
+        return down(DownReason::OffsetHigh);
+    }
     let Some(gmid) = input.gmid else {
         return down(DownReason::NoGrandmaster);
     };
@@ -321,6 +341,9 @@ fn qualify_sink(input: &QualifyInput<'_>, sink: &SinkConfig, rate: u32) -> Strea
     }
     if !input.lock_hold_satisfied {
         return down(DownReason::LockHold);
+    }
+    if !offset_within_threshold(input.master_offset_ns, input.config.ptp.max_offset_ns) {
+        return down(DownReason::OffsetHigh);
     }
     if input.gmid.is_none() || input.gmid == Some([0u8; 8]) {
         return down(DownReason::NoGrandmaster);
@@ -415,6 +438,7 @@ mod tests {
             config: cfg,
             locked: true,
             lock_hold_satisfied: true,
+            master_offset_ns: Some(0),
             domain: 0,
             gmid: Some(gmid()),
             interface_present: true,
@@ -443,6 +467,55 @@ mod tests {
         let states = qualify(&input(&cfg, &discovered));
         assert!(matches!(&states[0], StreamState::SourceUp(_)));
         assert!(matches!(&states[1], StreamState::SinkUp(_)));
+    }
+
+    #[test]
+    fn offset_above_threshold_holds_source_and_sink() {
+        let cfg = base_config();
+        let mut discovered = HashMap::new();
+        discovered.insert(("Studio-IO".into(), "PGM-1".into()), good_sdp());
+        let mut qi = input(&cfg, &discovered);
+        qi.master_offset_ns = Some(2_000_000);
+        let states = qualify(&qi);
+        assert_eq!(states[0].down_reason(), Some(DownReason::OffsetHigh));
+        assert_eq!(states[1].down_reason(), Some(DownReason::OffsetHigh));
+    }
+
+    #[test]
+    fn offset_within_threshold_allows_up() {
+        let cfg = base_config();
+        let mut discovered = HashMap::new();
+        discovered.insert(("Studio-IO".into(), "PGM-1".into()), good_sdp());
+        let mut qi = input(&cfg, &discovered);
+        qi.master_offset_ns = Some(500_000);
+        let states = qualify(&qi);
+        assert!(matches!(&states[0], StreamState::SourceUp(_)));
+        assert!(matches!(&states[1], StreamState::SinkUp(_)));
+    }
+
+    #[test]
+    fn zero_max_offset_disables_gate() {
+        let mut cfg = base_config();
+        cfg.ptp.max_offset_ns = 0;
+        let mut discovered = HashMap::new();
+        discovered.insert(("Studio-IO".into(), "PGM-1".into()), good_sdp());
+        let mut qi = input(&cfg, &discovered);
+        qi.master_offset_ns = Some(i64::MAX);
+        let states = qualify(&qi);
+        assert!(matches!(&states[0], StreamState::SourceUp(_)));
+        assert!(matches!(&states[1], StreamState::SinkUp(_)));
+    }
+
+    #[test]
+    fn missing_offset_holds_when_threshold_nonzero() {
+        let cfg = base_config();
+        let mut discovered = HashMap::new();
+        discovered.insert(("Studio-IO".into(), "PGM-1".into()), good_sdp());
+        let mut qi = input(&cfg, &discovered);
+        qi.master_offset_ns = None;
+        let states = qualify(&qi);
+        assert_eq!(states[0].down_reason(), Some(DownReason::OffsetHigh));
+        assert_eq!(states[1].down_reason(), Some(DownReason::OffsetHigh));
     }
 
     #[test]

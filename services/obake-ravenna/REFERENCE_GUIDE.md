@@ -278,26 +278,6 @@ the record.
 The daemon also browses `_ravenna._sub._rtsp._tcp` so it can see peer
 nodes. Those browse results are not yet turned into SDP for `[[sink]]`.
 
-### ZMAN record
-
-| Field | Value |
-| --- | --- |
-| Instance name | Same host name as the RTSP node record. |
-| Type | `_http._tcp` |
-| Subtype | `_merging_zman._sub._http._tcp` |
-| Port | 9090 |
-| TXT | Empty. |
-
-This is the service ANEMAN uses for a ZMAN-class device. It is published
-once the listener has bound the PTP interface address, and withdrawn
-when that interface disappears. The listener answers
-`http://<host>:9090/advanced/index.html` with a mock page that names the
-host, and `ws://<host>:9090/cometd/handshake` with a Bayeux handshake
-(`/meta/handshake` returns a client id and `websocket`; `/meta/connect`
-keeps the session open). Stream service channels are not served yet.
-Port 9090 needs no extra capability. `obake-ravenna run --no-zman`
-skips the listener and does not publish this record.
-
 ## 4. Session-level PipeWire objects
 
 The daemon process runs a PipeWire main loop on a thread named

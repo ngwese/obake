@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright 2026 Greg Wuller
+# SPDX-License-Identifier: MIT
+
+[workspace]
+resolver = "2"
+members = ["obake-ravenna", "obake-session", "obake"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.99.1"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync", "time", "fs"] }
+log = "0.4"
+env_logger = "0.11"
+serde_yaml = "0.9"
+serde_json = "1"
+tempfile = "3"
+uuid = { version = "1", features = ["v4", "serde"] }
+base64 = "0.22"
+async-graphql = "7"
+async-graphql-axum = "7"
+axum = { version = "0.8", features = ["ws"] }
+http = "1"
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+async-stream = "0.3"
+toml = "0.8"
+bytes = "1"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+pipewire = "0.10"
+libc = "0.2"

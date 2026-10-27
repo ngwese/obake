@@ -6,6 +6,7 @@
 pub mod auth;
 mod client;
 mod config;
+pub mod device;
 pub mod format;
 pub mod rig;
 pub mod xfer;

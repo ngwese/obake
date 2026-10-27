@@ -38,8 +38,20 @@ obake auth rotate
 fingerprint. The host part of `user@host` is the config name. `auth
 approve` accepts a browser device code on the selected host (the Unix
 socket when no config is present). `auth rotate` replaces the bearer and
-updates the selected host entry; the fingerprint stays. `auth` is the
-documented noun that is not a schema entity.
+updates the selected host entry; the fingerprint stays. `auth` and
+`device` are documented nouns that are not schema entities.
+
+```bash
+obake device update --target obake@studio.local ./out
+obake device update --target obake@studio.local ./obake-0.8.0-a.raucb
+obake device update --target obake@studio.local ./obake-0.7.0-b.raucb --force
+```
+
+`device update` uses SSH only (no GraphQL). It probes `obake-update
+status`, selects `obake-<semver>-<inactive-slot>.raucb` (directory: newest
+semver ≥ device version; file: slot and semver checks unless `--force`),
+copies the bundle to `/home/.obake-update/`, and runs
+`obake-update apply --cleanup --reboot` on the staged path.
 
 ## Output
 
@@ -77,6 +89,9 @@ Noun-verb form. List with `<noun> ls` (not a plural noun alone).
 | `obake graph ls` | GraphQL `graph` |
 | `obake ravenna set` | GraphQL `setRavennaStreams` (JSON on stdin) |
 | `obake watch` | subscriptions |
+| `obake auth login <user@host>` | SSH |
+| `obake auth approve` / `rotate` | GraphQL |
+| `obake device update --target <user@host> PATH` | SSH |
 
 `file put` / `file get` take one or more sources and a final destination
 (cp-style). Sources may be globs or directories; a `.` or directory

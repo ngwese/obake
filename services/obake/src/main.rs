@@ -89,6 +89,11 @@ enum Commands {
         #[command(subcommand)]
         action: AuthCmd,
     },
+    /// Host OS update over SSH (no session API).
+    Device {
+        #[command(subcommand)]
+        action: DeviceCmd,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -107,6 +112,21 @@ enum AuthCmd {
     Rotate,
     /// Print bearer, port, and certificate fingerprint from the local socket.
     Credential,
+}
+
+#[derive(Subcommand, Debug)]
+enum DeviceCmd {
+    /// Push a RAUC bundle over SSH and apply it with cleanup + reboot.
+    Update {
+        /// `ssh-user@host`, for example `obake@studio.local`.
+        #[arg(long)]
+        target: String,
+        /// Local `.raucb` file or directory of `obake-<semver>-<slot>.raucb`.
+        path: PathBuf,
+        /// Skip slot and semver checks (file path only).
+        #[arg(long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -279,6 +299,15 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             return obake::auth::rotate(&config_path, &resolved)
                 .await
                 .map_err(|e| e.into());
+        }
+        Commands::Device {
+            action: DeviceCmd::Update {
+                target,
+                path,
+                force,
+            },
+        } => {
+            return obake::device::update(target, path, *force).map_err(|e| e.into());
         }
         _ => {}
     }
@@ -465,6 +494,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         },
         Commands::Watch { .. } => (Kind::Watch, Value::Null),
         Commands::Auth { .. } => unreachable!("auth commands return before dispatch"),
+        Commands::Device { .. } => unreachable!("device commands return before dispatch"),
     };
 
     if as_json {

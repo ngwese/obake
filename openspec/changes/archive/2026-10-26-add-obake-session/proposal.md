@@ -27,14 +27,16 @@ power loss, and lets local and remote clients make the change.
   empty session work area. A fork copies the session snapshot and the
   session work area, and leaves the rig working directory shared.
   The sessions of one rig can be listed. Each session's work-area
-  files can be listed and retrieved. A session that is not running can
-  be deleted, which removes its record and its work area.
+  files can be listed and transferred as raw bytes. A session that is
+  not running can be deleted, which removes its record and its work
+  area.
 - Clients speak GraphQL (query, mutation, subscription) on a Unix socket
-  in the `obake` runtime directory and on a configured network address.
-  A network request must present the host's bearer token. The schema
-  covers rigs, the
-  shapes the host can launch, session start and stop, system links, and
-  link status. Later in the same plan it also installs and removes
+  in the `obake` runtime directory and on a configured network address,
+  and speak HTTP(S) on the same listeners for session work-area file
+  bytes. A network request must present the host's bearer token. The
+  GraphQL schema covers rigs, the shapes the host can launch, session
+  start and stop, system links, and link status. Later in the same plan
+  it also installs and removes
   rig documents, reads the live PipeWire graph, and replaces the
   Ravenna sources and sinks `obake-ravenna` already reconciles.
 - Operators use a separate executable, `obake`, which is also the client
@@ -42,9 +44,10 @@ power loss, and lets local and remote clients make the change.
   without PipeWire, JACK, or Singularity, so it can be built on another
   machine and pointed at the host's network listener. The client config
   names several hosts and which one is the default. A flag selects
-  another host or replaces that host's endpoint or token. Every query
-  and mutation is a subcommand that calls GraphQL. The service itself
-  stays on the host.
+  another host or replaces that host's endpoint or token. Subcommands
+  follow a `<noun> <verb>` pattern by default (plurals become
+  `<noun> ls`). GraphQL covers control-plane operations; file get and
+  put use HTTP(S). The service itself stays on the host.
 - The work is ordered. Milestone 1 is the first progression and is the
   part expected to move first while the rest of the plan is iterated:
   start and stop a single `chuck` with a rig, a session, and
@@ -60,8 +63,9 @@ power loss, and lets local and remote clients make the change.
 ### New Capabilities
 
 - `obake-session`: rig definitions, single-session lifecycle, role
-  links, durable restore, and the GraphQL control API, including the
-  later rig, graph, and Ravenna edits.
+  links, durable restore, the GraphQL control API, and HTTP(S) session
+  file transfer, including the later
+  rig, graph, and Ravenna edits.
 
 ### Modified Capabilities
 
@@ -85,7 +89,7 @@ power loss, and lets local and remote clients make the change.
 - `chuck` and `rnbo-runner` images are unchanged. `siren` and `mod-host`
   are not launch targets. The service does not bind the host `libjack`
   into a shape.
-- GraphQL is served on the user-runtime Unix socket and on a configured
-  TCP port. The network listener requires a bearer token kept in the
-  `obake` home directory. An image update does not replace an existing
-  token.
+- GraphQL and HTTP(S) file routes are served on the user-runtime Unix
+  socket and on a configured TCP port. The network listener requires a
+  bearer token kept in the `obake` home directory. An image update does
+  not replace an existing token.

@@ -316,19 +316,14 @@ type SessionFile {
   directory: Boolean!
 }
 
-type SessionFileContent {
-  path: String!
-  base64: String!
-}
-
 type Query {
   rigs: [Rig!]!
   rig(name: String!): Rig
   shapes: [Shape!]!
   session: Session
   sessions(rig: String): [SessionRecord!]!
+  "Metadata only. Bytes use HTTP GET/PUT on the same listener."
   sessionFiles(id: ID!): [SessionFile!]!
-  sessionFile(id: ID!, path: String!): SessionFileContent!
   "Milestone 4. Live nodes, not the stored session."
   graph: [GraphNode!]!
 }
@@ -408,17 +403,40 @@ true only for `chuck` and `rnbo-runner` with a SIF in `image_dir`.
 absent even if a SIF exists.
 
 `sessions(rig:)` omits the argument to list every recorded session.
-`sessionFiles` and `sessionFile` read only the session work area.
-`sessionFile` returns base64. `..` and any absolute path fail before a
-file is opened. `deleteSession` removes that session's snapshot and work
-area and does not follow `forkedFrom`. It fails while that session is
-the one named by `current`.
+`sessionFiles` lists metadata in the session work area only. File bytes
+are not carried through GraphQL. `..` and any absolute path fail before
+a file is opened. `deleteSession` removes that session's snapshot and
+work area and does not follow `forkedFrom`. It fails while that session
+is the one named by `current`.
+
+#### HTTP(S) session files
+
+The same Unix socket and TCP listener that serve GraphQL also serve
+raw work-area bytes:
+
+```
+GET  /sessions/{id}/files/{*path}
+PUT  /sessions/{id}/files/{*path}
+GET  /sessions/current/files/{*path}
+PUT  /sessions/current/files/{*path}
+```
+
+`current` means the active session named by `current`. When idle, those
+routes fail. The body is the file octets; there is no base64 wrapper.
+`Content-Type` is `application/octet-stream`. Path rules match
+`sessionFiles`: relative to that session's work area only. TCP uses the
+same bearer token as GraphQL; the Unix socket does not. PUT creates or
+replaces a regular file and fails on a path that would escape the work
+area or overwrite a directory.
+
+#### `obake` CLI shape
 
 The service binary is `obake-session run` only. `obake` is the operator
-tool and the library. It posts GraphQL to the endpoint it resolved.
-Resolution order is `--endpoint` and `--token`, then the host selected
-by `--host`, then the config file's `default` host, then the user Unix
-socket. The file is `$XDG_CONFIG_HOME/obake/config.yaml`, or
+tool and the library. Control-plane calls post GraphQL; `file get` and
+`file put` use HTTP(S) on the same resolved endpoint. Resolution order
+is `--endpoint` and `--token`, then the host selected by `--host`, then
+the config file's `default` host, then the user Unix socket. The file
+is `$XDG_CONFIG_HOME/obake/config.yaml`, or
 `~/.config/obake/config.yaml` when `XDG_CONFIG_HOME` is unset. `--config`
 selects another path. A missing file is not an error. An unknown
 `--host`, or a `default` that is not in `hosts`, fails before a request.
@@ -436,11 +454,41 @@ hosts:
 
 That file lives on the machine running `obake`. It is not the host's
 `/home/obake/.config/obake-session/token`. The library loads the same
-file for other programs. Each query and mutation has a subcommand
-(`rigs`, `rig`, `shapes`, `sessions`, `session`, `start`,
-`stop`, `links`, `files`, `file`, `delete-session`, and the later
-`rig install`, `rig remove`, `graph`, and `ravenna set`).
-`watch` is the subscription subcommand and lands with subscriptions.
+file for other programs.
+
+By default every subcommand is `<noun> <verb>`. Nouns are schema
+entities (`rig`, `shape`, `session`, `link`, `file`, `graph`, …).
+Verbs are `ls`, `start`, `stop`, `create`, `delete`, `get`, and
+`describe`. A plural noun alone is not a command: list with
+`<noun> ls` (for example `rig ls`, not `rigs`). Exceptions are allowed
+when a flat verb would be unclear; this change keeps `ravenna set` and
+`watch` as exceptions.
+
+| Command | Role |
+|---|---|
+| `rig ls` | list installed rigs |
+| `rig describe <name>` | one rig |
+| `rig create <name> --file …` | install a rig document |
+| `rig delete <name>` | remove a rig |
+| `shape ls` | list shapes |
+| `session ls [--rig]` | list recorded sessions |
+| `session describe` | active session (fails when idle) |
+| `session describe <id>` | one recorded session |
+| `session start <rig>` | start (fresh/fork flags as today) |
+| `session stop` | stop the active session |
+| `session delete <id>` | delete an inactive session |
+| `link set …` | replace system links |
+| `file ls [--session <id>]` | list work-area files (active if omitted) |
+| `file get <path> <dest> [--session <id>]` | HTTP GET bytes (like `cp`) |
+| `file put <local> <dest> [--session <id>]` | HTTP PUT bytes |
+| `graph ls` | live PipeWire graph |
+| `ravenna set` | exception: replace Ravenna streams |
+| `watch` | exception: subscriptions |
+
+`file get` destinations: `.` writes a local file with the remote
+basename; `-` streams to stdout; any other path is the local target.
+`--session` on `file ls`, `file get`, and `file put` selects a recorded
+session; omitting it uses the active session.
 
 The bearer token is `/home/obake/.config/obake-session/token`, mode
 `0600`, created when missing and left in place when present. TCP

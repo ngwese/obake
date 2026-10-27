@@ -103,7 +103,7 @@
   `session`, `start`, `stop`, `links`, `files`, `file`, `delete-session`).
   Verify a headless test serves a stub GraphQL endpoint, runs `obake`
   against it, and records one GraphQL operation per subcommand, without
-  starting `obake-session`.
+  starting `obake-session`. (Superseded CLI shape: task 12.1.)
 - [x] 7.2 Load hosts from `$XDG_CONFIG_HOME/obake/config.yaml`, or from the
   file named by `--config`. Each host has an `endpoint` and a `token`, and
   `default` names one of them. Verify a temp file with `studio` and `spare`
@@ -151,7 +151,8 @@
   directory, and the `obake rig install` and `rig remove`
   subcommands. Verify an installed `duo` document appears
   in `rigs` and can be started, and removing the active rig fails
-  with that session still running.
+  with that session still running. (Superseded CLI verbs: task 12.1
+  `rig create` / `rig delete`.)
 
 ## 10. Milestone 4 — live graph
 
@@ -167,3 +168,27 @@
   add `obake ravenna set`. Verify a test with a fake config
   writes one source and one sink, does not restart PipeWire, and returns an
   error without creating the directory when the Ravenna service is absent.
+
+## 12. CLI noun-verb UX and HTTP session files
+
+- [x] 12.1 Restructure `obake` to `<noun> <verb>`: `rig ls|describe|create|delete`,
+  `shape ls`, `session ls|describe|start|stop|delete`, `link set`,
+  `file ls|get|put`, `graph ls`, keeping `ravenna set` and `watch` as
+  exceptions. Map former plurals (`rigs`, `shapes`, `sessions`) to
+  `<noun> ls`. Verify `obake --help` and a stub GraphQL test exercise each
+  new command path, and that `session describe` with no id describes the
+  active session.
+- [x] 12.2 Serve HTTP GET and PUT for session work-area bytes on the Unix
+  socket and TCP listener at `/sessions/{id|current}/files/{*path}`, with
+  the same bearer rules as GraphQL. Remove GraphQL `sessionFile` content
+  transfer; keep `sessionFiles` for listing. Verify GET returns raw bytes,
+  PUT writes a file, `../` fails, TCP without a token is rejected, and
+  Unix without a token succeeds.
+- [x] 12.3 Implement `obake file get <path> <dest> [--session <id>]` and
+  `obake file put <local> <dest> [--session <id>]` over HTTP(S): `.`
+  uses the remote basename, `-` streams to stdout, omitted `--session`
+  uses the active session. Verify a headless test against a stub HTTP
+  endpoint covers get-to-file, get-to-stdout, put, and `--session`.
+- [x] 12.4 Update `services/obake/README.md` and
+  `services/obake-session/README.md` for the noun-verb CLI and the file
+  HTTP routes. Verify the README examples match the commands in 12.1.

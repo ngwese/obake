@@ -369,22 +369,32 @@ create a Ravenna configuration.
 - **WHEN** a client submits streams and `obake-ravenna` is not installed
 - **THEN** the mutation fails and no Ravenna configuration is created
 
-### Requirement: Session work-area files can be listed and retrieved
+### Requirement: Session work-area files can be listed and transferred
 
-The service SHALL list the files in a session's work area and SHALL
-return the bytes of one file named by a path relative to that work area.
-A path that escapes the work area, or names a missing file, SHALL fail.
+The service SHALL list the files in a session's work area through
+GraphQL. It SHALL serve HTTP GET and HTTP PUT of raw file bytes for a
+path relative to that work area on the same listeners as GraphQL. A path
+that escapes the work area, or a GET that names a missing file, SHALL
+fail. PUT SHALL create or replace a regular file and SHALL NOT overwrite
+a directory. GraphQL SHALL NOT be the path that carries file content.
 
-#### Scenario: A file in the work area is returned
+#### Scenario: A file in the work area is returned over HTTP
 
-- **WHEN** a session work area contains `take.wav` and a client retrieves
-  that path
-- **THEN** the response is the bytes of `take.wav`
+- **WHEN** a session work area contains `take.wav` and a client GETs
+  that path for that session
+- **THEN** the response body is the bytes of `take.wav` with no base64
+  encoding
+
+#### Scenario: A file can be written over HTTP
+
+- **WHEN** a client PUTs bytes to `scratch.ck` in a session work area
+- **THEN** that path holds those bytes and a later list includes it
 
 #### Scenario: A path outside the work area fails
 
-- **WHEN** a client retrieves `../lead.ck`
-- **THEN** the retrieval fails and no file outside the work area is read
+- **WHEN** a client GETs or PUTs `../lead.ck`
+- **THEN** the request fails and no file outside the work area is read
+  or written
 
 ### Requirement: A session can be deleted
 
@@ -408,13 +418,14 @@ session.
 ### Requirement: A separate CLI performs every API operation
 
 `obake` SHALL be an executable other than the service, and the client
-library other programs link. It SHALL perform every query and mutation
-by calling the GraphQL API. Building it SHALL NOT require PipeWire,
-JACK, or Singularity, and SHALL NOT require building the service.
+library other programs link. It SHALL perform control-plane queries and
+mutations through GraphQL, and SHALL transfer session file bytes through
+HTTP(S). Building it SHALL NOT require PipeWire, JACK, or Singularity,
+and SHALL NOT require building the service.
 
 #### Scenario: The CLI starts a session through GraphQL
 
-- **WHEN** the operator uses `obake` to start a rig
+- **WHEN** the operator runs `obake session start` for a rig
 - **THEN** the service receives a `startSession` operation and that
   session becomes active
 
@@ -423,6 +434,57 @@ JACK, or Singularity, and SHALL NOT require building the service.
 - **WHEN** `obake` is built
 - **THEN** that build does not require PipeWire, JACK, Singularity, or
   the service executable
+
+### Requirement: The CLI uses noun-verb commands
+
+`obake` subcommands SHALL follow `<noun> <verb>` by default. Nouns SHALL
+be schema entities. Verbs SHALL include `ls`, `start`, `stop`, `create`,
+`delete`, `get`, and `describe`. A plural noun SHALL NOT be a top-level
+command; listing SHALL use `<noun> ls`. Documented exceptions MAY omit
+the pattern when a flat verb would be unclear.
+
+#### Scenario: Listing uses noun ls
+
+- **WHEN** the operator lists installed rigs
+- **THEN** the command is `obake rig ls` and not a plural top-level
+  `rigs` command
+
+#### Scenario: Session describe defaults to the active session
+
+- **WHEN** a session is active and the operator runs
+  `obake session describe` with no id
+- **THEN** the output describes that active session
+
+#### Scenario: File commands default to the active session
+
+- **WHEN** a session is active and the operator runs `obake file ls`
+  without `--session`
+- **THEN** the listed files are that session's work area
+
+#### Scenario: File get writes like cp
+
+- **WHEN** the operator runs `obake file get take.wav .` for the active
+  session
+- **THEN** the client performs an HTTP GET of the raw bytes and writes a
+  local file named `take.wav`
+
+#### Scenario: File get can stream to stdout
+
+- **WHEN** the operator runs `obake file get take.wav -`
+- **THEN** the raw bytes are written to stdout
+
+#### Scenario: File put uploads bytes
+
+- **WHEN** the operator runs `obake file put ./local.ck remote.ck`
+- **THEN** the client performs an HTTP PUT of the local file bytes into
+  the session work area at `remote.ck`
+
+#### Scenario: File commands accept --session
+
+- **WHEN** the operator passes `--session <id>` to `file ls`, `file get`,
+  or `file put`
+- **THEN** the operation targets that session's work area instead of the
+  active session
 
 ### Requirement: The client config names hosts and a default
 
@@ -461,13 +523,14 @@ NOT send a request.
 - **WHEN** the operator names a host that is not in the config
 - **THEN** the command fails and no request is sent
 
-### Requirement: GraphQL is served locally and on the network
+### Requirement: GraphQL and file HTTP are served locally and on the network
 
-The service SHALL accept GraphQL on a Unix socket in the `obake` user's
-runtime directory and on a configured TCP address. A request to the TCP
-address SHALL include the host's bearer token. A TCP request without
-that token SHALL be rejected and SHALL NOT change the session. A request
-on the Unix socket SHALL NOT require the token.
+The service SHALL accept GraphQL and session-file HTTP on a Unix socket
+in the `obake` user's runtime directory and on a configured TCP address.
+A request to the TCP address SHALL include the host's bearer token. A
+TCP request without that token SHALL be rejected and SHALL NOT change
+the session or work-area files. A request on the Unix socket SHALL NOT
+require the token.
 
 #### Scenario: A tokened network client is served
 
@@ -485,3 +548,9 @@ on the Unix socket SHALL NOT require the token.
 
 - **WHEN** a client queries the user Unix socket without a bearer token
 - **THEN** the query result is returned
+
+#### Scenario: Network file GET requires the token
+
+- **WHEN** a client GETs a session file on the TCP address without the
+  bearer token
+- **THEN** the request is rejected and no file bytes are returned

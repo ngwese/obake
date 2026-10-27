@@ -60,7 +60,8 @@ Noun-verb form. List with `<noun> ls` (not a plural noun alone).
 |---|---|
 | `obake rig ls` | GraphQL `rigs` |
 | `obake rig describe <name>` | GraphQL `rig(name)` |
-| `obake rig create <name> --file …` | GraphQL `installRig` |
+| `obake rig init <name> [--path DIR]` | local scaffold (no service) |
+| `obake rig create <name> --path …` | YAML → `installRig`; dir → package tar PUT |
 | `obake rig delete <name>` | GraphQL `removeRig` |
 | `obake shape ls` | GraphQL `shapes` |
 | `obake session ls [--rig NAME]` | GraphQL `sessions(rig:)` |

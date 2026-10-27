@@ -596,6 +596,29 @@ impl Client {
         .await
     }
 
+    /// Install a directory package from an uncompressed tar.
+    pub async fn install_rig_package(&self, name: &str, archive: &[u8]) -> Result<(), ClientError> {
+        let path = format!("{API_V0}/rigs/{name}/package");
+        let len = archive.len() as u64;
+        let body = Full::new(Bytes::copy_from_slice(archive));
+        let res = self
+            .send_file_request_len("PUT", &path, body, Some(len))
+            .await?;
+        let status = res.status();
+        if status.is_success() {
+            Ok(())
+        } else {
+            let collected = res
+                .into_body()
+                .collect()
+                .await
+                .map_err(|e| ClientError::msg(e.to_string()))?;
+            let bytes = collected.to_bytes();
+            let msg = String::from_utf8_lossy(&bytes);
+            Err(ClientError::msg(format!("http {status}: {msg}")))
+        }
+    }
+
     /// Remove rig.
     pub async fn remove_rig(&self, name: &str) -> Result<Value, ClientError> {
         self.execute(

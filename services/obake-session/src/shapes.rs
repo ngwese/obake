@@ -22,6 +22,10 @@ pub const PROFILES: &[ShapeProfile] = &[
         launchable: true,
     },
     ShapeProfile {
+        name: "chuck-alpine",
+        launchable: true,
+    },
+    ShapeProfile {
         name: "rnbo-runner",
         launchable: true,
     },
@@ -40,7 +44,7 @@ pub fn is_launchable(name: &str) -> bool {
 /// Map a role slot to the shape's JACK/PipeWire port name.
 pub fn port_name(shape: &str, direction: RoleDirection, index: u32) -> Option<String> {
     match shape {
-        "chuck" => match direction {
+        "chuck" | "chuck-alpine" => match direction {
             RoleDirection::Out => Some(format!("outport {index}")),
             RoleDirection::In => Some(format!("inport {index}")),
         },
@@ -101,6 +105,10 @@ mod tests {
         assert_eq!(
             port_name("chuck", RoleDirection::In, 2).unwrap(),
             "inport 2"
+        );
+        assert_eq!(
+            port_name("chuck-alpine", RoleDirection::Out, 0).unwrap(),
+            "outport 0"
         );
     }
 

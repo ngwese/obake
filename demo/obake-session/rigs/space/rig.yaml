@@ -6,14 +6,14 @@
 
 instances:
   lead:
-    shape: chuck
-    command: ["--out:1", "lead.ck"]
+    shape: chuck-alpine
+    command: ["--verbose", "--out:1", "lead.ck"]
     roles:
       out: [melody]
       in: []
   harmony:
-    shape: chuck
-    command: ["--out:1", "harmony.ck"]
+    shape: chuck-alpine
+    command: ["--verbose", "--out:1", "harmony.ck"]
     roles:
       out: [pad]
       in: []

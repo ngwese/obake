@@ -60,9 +60,10 @@ fn setup() -> (tempfile::TempDir, Arc<Service>, Arc<FakeLauncher>, Arc<FakeGraph
     let dir = tempdir().unwrap();
     let paths = Paths::under(dir.path());
     paths.ensure().unwrap();
-    fs::write(paths.rig_file("quartet"), lead_rig()).unwrap();
-    fs::create_dir_all(paths.rig_work("quartet")).unwrap();
-    fs::write(paths.rig_work("quartet").join("lead.ck"), "SinOsc s;").unwrap();
+    fs::create_dir_all(paths.rig_dir("quartet")).unwrap();
+    fs::write(paths.rig_dir_definition("quartet"), lead_rig()).unwrap();
+    fs::create_dir_all(paths.rig_package_work("quartet")).unwrap();
+    fs::write(paths.rig_package_work("quartet").join("lead.ck"), "SinOsc s;").unwrap();
     // Shape images
     fs::create_dir_all(&paths.default_image_dir).unwrap();
     fs::write(paths.default_image_dir.join("chuck.sif"), "fake").unwrap();
@@ -104,13 +105,17 @@ async fn fresh_start_persists_and_restores() {
         .start_session("quartet", SessionMode::Fresh, None)
         .unwrap();
     assert!(session.record.system_links.is_empty());
-    assert!(service
-        .paths()
-        .rig_work("quartet")
-        .join("lead.ck")
-        .is_file());
     let work = service.paths().session_work(&session.record.id);
-    assert!(work.read_dir().unwrap().next().is_none());
+    assert_eq!(
+        fs::read_to_string(work.join("lead.ck")).unwrap(),
+        "SinOsc s;"
+    );
+    // Template stays pristine when the session copy is edited.
+    fs::write(work.join("lead.ck"), "edited").unwrap();
+    assert_eq!(
+        fs::read_to_string(service.paths().rig_package_work("quartet").join("lead.ck")).unwrap(),
+        "SinOsc s;"
+    );
 
     let started = launcher.started();
     assert_eq!(started.len(), 1);
@@ -124,8 +129,8 @@ async fn fresh_start_persists_and_restores() {
     assert!(started[0]
         .binds
         .iter()
-        .any(|b| b.target == "/work"));
-    assert!(started[0]
+        .any(|b| b.target == "/work" && b.source == work));
+    assert!(!started[0]
         .binds
         .iter()
         .any(|b| b.target == "/session"));
@@ -195,11 +200,50 @@ async fn fork_copies_work_shares_rig() {
         .session_work(&forked.record.id)
         .join("take.wav");
     assert_eq!(fs::read(&forked_take).unwrap(), b"RIFF");
-    assert!(service
-        .paths()
-        .rig_work("quartet")
-        .join("lead.ck")
-        .is_file());
+    assert_eq!(
+        fs::read_to_string(
+            service
+                .paths()
+                .session_work(&forked.record.id)
+                .join("lead.ck")
+        )
+        .unwrap(),
+        "SinOsc s;"
+    );
+    assert_eq!(
+        fs::read_to_string(service.paths().rig_package_work("quartet").join("lead.ck")).unwrap(),
+        "SinOsc s;"
+    );
+}
+
+#[tokio::test]
+async fn second_fresh_reseeds_from_template() {
+    let (_dir, service, _launcher, _graph) = setup();
+    let first = service
+        .start_session("quartet", SessionMode::Fresh, None)
+        .unwrap();
+    fs::write(
+        service
+            .paths()
+            .session_work(&first.record.id)
+            .join("lead.ck"),
+        "edited",
+    )
+    .unwrap();
+    service.stop_session().unwrap();
+    let second = service
+        .start_session("quartet", SessionMode::Fresh, None)
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(
+            service
+                .paths()
+                .session_work(&second.record.id)
+                .join("lead.ck")
+        )
+        .unwrap(),
+        "SinOsc s;"
+    );
 }
 
 #[tokio::test]
@@ -250,12 +294,12 @@ async fn sessions_files_delete() {
     assert!(service.delete_session(&active.record.id).is_err());
     service.stop_session().unwrap();
 
-    let asm_before = service.paths().rig_work("quartet").join("lead.ck");
-    assert!(asm_before.is_file());
+    let template = service.paths().rig_package_work("quartet").join("lead.ck");
+    assert!(template.is_file());
     service.delete_session(&q1.record.id).unwrap();
     assert!(service.sessions(Some("quartet")).unwrap().iter().all(|s| s.id != q1.record.id));
     assert!(!service.paths().session_work(&q1.record.id).exists());
-    assert!(asm_before.is_file());
+    assert!(template.is_file());
 }
 
 #[tokio::test]
@@ -293,7 +337,7 @@ async fn system_links_pending_applied_removed() {
         .contains(&("lead:outport 1".into(), "obake-out-1:send_1".into())));
 
     // Rig YAML unchanged
-    let asm = fs::read_to_string(service.paths().rig_file("quartet")).unwrap();
+    let asm = fs::read_to_string(service.paths().rig_dir_definition("quartet")).unwrap();
     assert!(!asm.contains("obake-out-1"));
 
     service.set_system_links(vec![]).unwrap();
@@ -424,14 +468,14 @@ aliases:
         status[0].state,
         obake_session::links::LinkState::Applied
     ));
-    let asm = fs::read_to_string(service.paths().rig_file("quartet")).unwrap();
+    let asm = fs::read_to_string(service.paths().rig_dir_definition("quartet")).unwrap();
     assert!(!asm.contains("mixpre"));
 }
 
 #[tokio::test]
 async fn multi_instance_role_links() {
     let (_dir, service, launcher, graph) = setup();
-    fs::write(service.paths().rig_file("quartet"), quartet_multi()).unwrap();
+    fs::write(service.paths().rig_dir_definition("quartet"), quartet_multi()).unwrap();
     service
         .start_session("quartet", SessionMode::Fresh, None)
         .unwrap();
@@ -454,7 +498,7 @@ async fn multi_instance_role_links() {
     assert!(node_names.iter().any(|p| p.contains("harmony")));
     assert!(node_names.iter().any(|p| p.contains("space")));
 
-    let asm = fs::read_to_string(service.paths().rig_file("quartet")).unwrap();
+    let asm = fs::read_to_string(service.paths().rig_dir_definition("quartet")).unwrap();
     assert!(!asm.contains("outport"));
     assert!(!asm.contains("out1"));
 
@@ -490,7 +534,7 @@ sample_library:
     )
     .unwrap();
     fs::write(
-        paths.rig_file("quartet"),
+        paths.rig_dir_definition("quartet"),
         r#"
 instances:
   lead:
@@ -525,6 +569,7 @@ async fn install_remove_rig() {
     let doc = lead_rig();
     service.install_rig("duo", doc).unwrap();
     assert!(service.rig("duo").unwrap().is_some());
+    assert!(service.paths().rig_file("duo").is_file());
     service
         .start_session("duo", SessionMode::Fresh, None)
         .unwrap();
@@ -532,6 +577,76 @@ async fn install_remove_rig() {
     service.stop_session().unwrap();
     service.remove_rig("duo").unwrap();
     assert!(service.rig("duo").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn install_directory_package_and_tar() {
+    let (dir, service, _l, _g) = setup();
+    let pkg = dir.path().join("pkg");
+    fs::create_dir_all(pkg.join("work")).unwrap();
+    fs::write(pkg.join("rig.yaml"), lead_rig()).unwrap();
+    fs::write(pkg.join("work/lead.ck"), "from-pkg").unwrap();
+    service.install_rig_dir("tone", &pkg).unwrap();
+    assert!(service.paths().rig_dir_definition("tone").is_file());
+    let session = service
+        .start_session("tone", SessionMode::Fresh, None)
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(
+            service
+                .paths()
+                .session_work(&session.record.id)
+                .join("lead.ck")
+        )
+        .unwrap(),
+        "from-pkg"
+    );
+    service.stop_session().unwrap();
+
+    let tar = obake_session::service::pack_package_tar(&pkg).unwrap();
+    service.install_rig_tar("tone2", &tar).unwrap();
+    assert!(service.rig("tone2").unwrap().is_some());
+
+    // Hand-built ustar with an absolute member name (Builder refuses these).
+    let bad = ustar_member("/etc/passwd", b"x");
+    let err = service.install_rig_tar("evil", &bad).unwrap_err();
+    assert!(
+        err.to_string().contains("escapes") || err.to_string().contains("absolute"),
+        "{err}"
+    );
+}
+
+fn ustar_member(name: &str, data: &[u8]) -> Vec<u8> {
+    let mut header = [0u8; 512];
+    let name_bytes = name.as_bytes();
+    header[..name_bytes.len().min(100)].copy_from_slice(&name_bytes[..name_bytes.len().min(100)]);
+    // mode
+    header[100..108].copy_from_slice(b"0000644\0");
+    // uid/gid
+    header[108..116].copy_from_slice(b"0000000\0");
+    header[116..124].copy_from_slice(b"0000000\0");
+    // size (octal)
+    let size = format!("{:011o}\0", data.len());
+    header[124..136].copy_from_slice(size.as_bytes());
+    // mtime
+    header[136..148].copy_from_slice(b"00000000000\0");
+    // typeflag regular file
+    header[156] = b'0';
+    // magic
+    header[257..263].copy_from_slice(b"ustar\0");
+    header[263..265].copy_from_slice(b"00");
+    // checksum: sum of unsigned bytes with checksum field as spaces
+    header[148..156].copy_from_slice(b"        ");
+    let sum: u32 = header.iter().map(|&b| b as u32).sum();
+    let cksum = format!("{sum:06o}\0 ");
+    header[148..156].copy_from_slice(cksum.as_bytes());
+    let mut out = header.to_vec();
+    out.extend_from_slice(data);
+    let pad = (512 - (data.len() % 512)) % 512;
+    out.extend(std::iter::repeat_n(0u8, pad));
+    // two zero blocks
+    out.extend(std::iter::repeat_n(0u8, 1024));
+    out
 }
 
 #[tokio::test]

@@ -6,8 +6,8 @@
 
 instances:
   tone:
-    shape: chuck
-    command: ["--out:2", "tone.ck"]
+    shape: chuck-alpine
+    command: ["--verbose", "--out:2", "tone.ck"]
     roles:
       out: [left, right]
       in: []

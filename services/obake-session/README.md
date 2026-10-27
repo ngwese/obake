@@ -47,18 +47,28 @@ active session and fails when idle. Listing stays on GraphQL
 
 ## Layout
 
+A rig is either a single file or a directory package under config:
+
 ```
 ~/.config/obake-session/host.yaml
-~/.config/obake-session/rigs/<name>.yaml
+~/.config/obake-session/rigs/<name>.yaml          # single-file form
+~/.config/obake-session/rigs/<name>/rig.yaml      # directory form
+~/.config/obake-session/rigs/<name>/work/…        # optional fresh template
 ~/.config/obake-session/token          # created 0600 if missing
 ~/.config/obake-session/tls.crt        # self-signed cert, mode 0600
 ~/.config/obake-session/tls.key        # mode 0600
 ~/.local/state/obake-session/current
 ~/.local/state/obake-session/sessions/<id>.yaml
-~/.local/share/obake-session/rigs/<name>/work
-~/.local/share/obake-session/sessions/<id>/work
+~/.local/share/obake-session/sessions/<id>/work   # mounted at /work
 ~/shapes/<shape>.sif                   # or host.yaml image_dir
 ```
+
+Fresh starts copy the package `work/` template into the new session
+work directory (or start empty for a single-file rig). Instances see
+only `/work` (that session's copy). Fork copies session work; the next
+fresh start reseeds from the template. Directory packages can also be
+installed with `PUT /api/v0/rigs/{name}/package` (uncompressed tar;
+Unix socket or bearer only).
 
 ## Run
 

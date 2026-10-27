@@ -13,11 +13,12 @@ use crate::tls::ensure_host_cert;
 use async_graphql::http::GraphiQLSource;
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse, GraphQLSubscription};
 use axum::body::Body;
+use http_body_util::BodyExt;
 use axum::extract::{DefaultBodyLimit, Extension, Json, Path, Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::serve::Listener;
 use axum::Router;
 use serde::Deserialize;
@@ -333,6 +334,36 @@ async fn put_session_file(
     }
 }
 
+async fn put_rig_package(
+    State(state): State<AppState>,
+    Extension(cred): Extension<Cred>,
+    Path(name): Path<String>,
+    body: Body,
+) -> Response {
+    if !matches!(cred, Cred::Socket | Cred::Bearer) {
+        return (StatusCode::FORBIDDEN, "operator credentials required").into_response();
+    }
+    if name.is_empty() || name.contains('/') || name.contains(':') {
+        return (StatusCode::BAD_REQUEST, "invalid rig name").into_response();
+    }
+    let collected = match body.collect().await {
+        Ok(c) => c.to_bytes(),
+        Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    };
+    match state.service.install_rig_tar(&name, &collected) {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => {
+            let msg = e.to_string();
+            let status = if msg.contains("escapes") || msg.contains("absolute") {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (status, msg).into_response()
+        }
+    }
+}
+
 async fn stream_put_to_path(
     dest: &FsPath,
     label: &str,
@@ -411,6 +442,10 @@ fn app_router(schema: AppSchema, service: Arc<Service>, require_auth: bool) -> R
         .route(
             &format!("{API_V0}/sessions/{{session_id}}/files/{{*path}}"),
             get(get_session_file).put(put_session_file),
+        )
+        .route(
+            &format!("{API_V0}/rigs/{{name}}/package"),
+            put(put_rig_package),
         )
         .layer(DefaultBodyLimit::disable());
     let mut router = Router::new()

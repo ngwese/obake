@@ -6,6 +6,41 @@
 use std::env;
 use std::path::{Path, PathBuf};
 
+/// How an installed rig is stored under the config rigs tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RigPackage {
+    /// `rigs/<name>.yaml`
+    File {
+        /// Path to the YAML document.
+        path: PathBuf,
+    },
+    /// `rigs/<name>/rig.yaml` with optional `work/` template.
+    Dir {
+        /// Path to `rig.yaml`.
+        definition: PathBuf,
+        /// Path to the optional package `work/` template directory.
+        work: PathBuf,
+    },
+}
+
+impl RigPackage {
+    /// Path to the YAML definition for either form.
+    pub fn definition(&self) -> &Path {
+        match self {
+            Self::File { path } => path,
+            Self::Dir { definition, .. } => definition,
+        }
+    }
+
+    /// Package `work/` template directory, when this is a directory package.
+    pub fn work_template(&self) -> Option<&Path> {
+        match self {
+            Self::File { .. } => None,
+            Self::Dir { work, .. } => Some(work.as_path()),
+        }
+    }
+}
+
 /// Overrideable on-disk layout for the session daemon.
 #[derive(Debug, Clone)]
 pub struct Paths {
@@ -13,7 +48,7 @@ pub struct Paths {
     pub config_dir: PathBuf,
     /// `$XDG_STATE_HOME/obake-session` (current, sessions).
     pub state_dir: PathBuf,
-    /// `$XDG_DATA_HOME/obake-session` (rig and session work areas).
+    /// `$XDG_DATA_HOME/obake-session` (session work areas).
     pub share_dir: PathBuf,
     /// Default shape image directory (`~/shapes`).
     pub default_image_dir: PathBuf,
@@ -68,7 +103,6 @@ impl Paths {
     pub fn ensure(&self) -> std::io::Result<()> {
         std::fs::create_dir_all(self.config_dir.join("rigs"))?;
         std::fs::create_dir_all(self.state_dir.join("sessions"))?;
-        std::fs::create_dir_all(self.share_dir.join("rigs"))?;
         std::fs::create_dir_all(self.share_dir.join("sessions"))?;
         std::fs::create_dir_all(self.runtime_dir.join("obake-session"))?;
         Ok(())
@@ -94,14 +128,53 @@ impl Paths {
         self.config_dir.join("tls.key")
     }
 
-    /// Rig document directory.
+    /// Rig package directory.
     pub fn rigs_dir(&self) -> PathBuf {
         self.config_dir.join("rigs")
     }
 
-    /// One rig YAML.
+    /// Single-file form path: `rigs/<name>.yaml`.
     pub fn rig_file(&self, name: &str) -> PathBuf {
         self.rigs_dir().join(format!("{name}.yaml"))
+    }
+
+    /// Directory form root: `rigs/<name>/`.
+    pub fn rig_dir(&self, name: &str) -> PathBuf {
+        self.rigs_dir().join(name)
+    }
+
+    /// Directory form definition: `rigs/<name>/rig.yaml`.
+    pub fn rig_dir_definition(&self, name: &str) -> PathBuf {
+        self.rig_dir(name).join("rig.yaml")
+    }
+
+    /// Directory form work template: `rigs/<name>/work/`.
+    pub fn rig_package_work(&self, name: &str) -> PathBuf {
+        self.rig_dir(name).join("work")
+    }
+
+    /// True when both file and directory forms exist for `name`.
+    pub fn rig_name_conflict(&self, name: &str) -> bool {
+        self.rig_file(name).is_file() && self.rig_dir_definition(name).is_file()
+    }
+
+    /// Resolve the installed package for `name`, if any.
+    ///
+    /// Returns `Err(())` when both forms exist (conflict).
+    pub fn resolve_rig(&self, name: &str) -> Result<Option<RigPackage>, ()> {
+        let file = self.rig_file(name);
+        let def = self.rig_dir_definition(name);
+        let has_file = file.is_file();
+        let has_dir = def.is_file();
+        match (has_file, has_dir) {
+            (true, true) => Err(()),
+            (true, false) => Ok(Some(RigPackage::File { path: file })),
+            (false, true) => Ok(Some(RigPackage::Dir {
+                definition: def,
+                work: self.rig_package_work(name),
+            })),
+            (false, false) => Ok(None),
+        }
     }
 
     /// `current` active-session marker.
@@ -114,12 +187,7 @@ impl Paths {
         self.state_dir.join("sessions").join(format!("{id}.yaml"))
     }
 
-    /// Rig working directory (mounted at `/work`).
-    pub fn rig_work(&self, name: &str) -> PathBuf {
-        self.share_dir.join("rigs").join(name).join("work")
-    }
-
-    /// Session work area (mounted at `/session`).
+    /// Session work directory (mounted at `/work`).
     pub fn session_work(&self, id: &str) -> PathBuf {
         self.share_dir.join("sessions").join(id).join("work")
     }
@@ -132,5 +200,47 @@ impl Paths {
     /// Shape SIF path under `image_dir`.
     pub fn shape_image(&self, image_dir: &Path, shape: &str) -> PathBuf {
         image_dir.join(format!("{shape}.sif"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn resolves_file_and_dir_forms() {
+        let dir = tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        paths.ensure().unwrap();
+        fs::write(paths.rig_file("duo"), "instances: {}\nlinks: []\n").unwrap();
+        fs::create_dir_all(paths.rig_dir("tone")).unwrap();
+        fs::write(paths.rig_dir_definition("tone"), "instances: {}\nlinks: []\n").unwrap();
+        fs::create_dir_all(paths.rig_package_work("tone")).unwrap();
+        fs::write(paths.rig_package_work("tone").join("tone.ck"), "x").unwrap();
+
+        let duo = paths.resolve_rig("duo").unwrap().unwrap();
+        assert!(matches!(duo, RigPackage::File { .. }));
+        let tone = paths.resolve_rig("tone").unwrap().unwrap();
+        match tone {
+            RigPackage::Dir { work, .. } => {
+                assert!(work.join("tone.ck").is_file());
+            }
+            _ => panic!("expected dir"),
+        }
+        assert!(paths.resolve_rig("missing").unwrap().is_none());
+    }
+
+    #[test]
+    fn detects_name_conflict() {
+        let dir = tempdir().unwrap();
+        let paths = Paths::under(dir.path());
+        paths.ensure().unwrap();
+        fs::write(paths.rig_file("tone"), "instances: {}\nlinks: []\n").unwrap();
+        fs::create_dir_all(paths.rig_dir("tone")).unwrap();
+        fs::write(paths.rig_dir_definition("tone"), "instances: {}\nlinks: []\n").unwrap();
+        assert!(paths.rig_name_conflict("tone"));
+        assert!(paths.resolve_rig("tone").is_err());
     }
 }

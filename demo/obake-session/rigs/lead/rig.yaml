@@ -6,8 +6,8 @@
 
 instances:
   lead:
-    shape: chuck
-    command: ["--out:2", "lead.ck"]
+    shape: chuck-alpine
+    command: ["--verbose", "--out:2", "lead.ck"]
     roles:
       out: [melody, bed]
       in: []

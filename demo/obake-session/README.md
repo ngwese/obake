@@ -6,29 +6,29 @@ Material for `obake-session`. Copy onto a host, then start a session.
 
 ```
 ~/.config/obake-session/host.yaml
-~/.config/obake-session/rigs/<name>.yaml
-~/.local/share/obake-session/rigs/<name>/work/
+~/.config/obake-session/rigs/<name>/rig.yaml
+~/.config/obake-session/rigs/<name>/work/…
+~/.local/share/obake-session/sessions/<id>/work/   # seeded on fresh start
 ```
+
+Each demo rig is a directory package: `rig.yaml` plus an optional
+`work/` template. A fresh session copies that template into the new
+session work directory (mounted at `/work` inside shapes).
 
 ## Install by hand
 
 ```bash
 install -d ~/.config/obake-session/rigs
 install -m 0644 host.yaml ~/.config/obake-session/host.yaml
-install -m 0644 rigs/*.yaml ~/.config/obake-session/rigs/
-
-for name in lead space tone; do
-  dest=~/.local/share/obake-session/rigs/$name/work
-  install -d "$dest"
-  install -m 0644 work/$name/* "$dest/"
-done
+cp -a rigs/lead rigs/space rigs/tone ~/.config/obake-session/rigs/
 ```
 
-Or install a single rig document over GraphQL:
+Or scaffold and install from the CLI:
 
 ```bash
-obake rig install --file rigs/lead.yaml --name lead
-# then place work/lead/* into the rig work area
+obake rig init myrig
+# edit myrig/rig.yaml and myrig/work/…
+obake rig create myrig --path ./myrig
 ```
 
 ## Start
@@ -46,6 +46,6 @@ System links are session state; they are not written into the rig YAML.
 
 | Name | Shapes | What it demonstrates |
 |---|---|---|
-| `lead` | one `chuck` | Design example: two out roles, no links |
-| `space` | two `chuck` + `rnbo-runner` | Role fan-in onto one input |
-| `tone` | one `chuck` | Minimal stereo source for MixPre / Ravenna |
+| `lead` | one `chuck-alpine` | Design example: two out roles, no links |
+| `space` | two `chuck-alpine` + `rnbo-runner` | Role fan-in onto one input |
+| `tone` | one `chuck-alpine` | Minimal stereo source for MixPre / Ravenna |

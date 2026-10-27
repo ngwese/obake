@@ -115,11 +115,21 @@ enum RigCmd {
     Ls,
     /// Show one rig.
     Describe { name: String },
-    /// Install a rig document from a file.
-    Create {
+    /// Scaffold a local directory package (`<name>/rig.yaml` + `work/`).
+    Init {
+        /// Package directory name.
         name: String,
+        /// Parent directory (default: current directory).
         #[arg(long)]
-        file: PathBuf,
+        path: Option<PathBuf>,
+    },
+    /// Install a rig from a local YAML file or directory package.
+    Create {
+        /// Rig name on the host.
+        name: String,
+        /// Local `.yaml` file or package directory containing `rig.yaml`.
+        #[arg(long)]
+        path: PathBuf,
     },
     /// Remove a rig by name.
     Delete { name: String },
@@ -218,6 +228,16 @@ async fn main() -> ExitCode {
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config_path = cli.config.unwrap_or_else(default_config_path);
     match &cli.command {
+        Commands::Rig {
+            action: RigCmd::Init { name, path },
+        } => {
+            let parent = path
+                .clone()
+                .unwrap_or_else(|| std::env::current_dir().expect("cwd"));
+            let root = obake::rig::init_package(&parent, name)?;
+            println!("{}", root.display());
+            return Ok(());
+        }
         Commands::Auth {
             action: AuthCmd::Login { target },
         } => {
@@ -346,10 +366,17 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Commands::Rig { action } => match action {
             RigCmd::Ls => (Kind::Rigs, client.rigs().await?),
             RigCmd::Describe { name } => (Kind::Rig, client.rig(&name).await?),
-            RigCmd::Create { name, file } => {
-                let doc = std::fs::read_to_string(file)?;
-                (Kind::InstallRig, client.install_rig(&name, &doc).await?)
+            RigCmd::Create { name, path } => {
+                if path.is_dir() {
+                    let tar = obake::rig::pack_directory(&path)?;
+                    client.install_rig_package(&name, &tar).await?;
+                    (Kind::InstallRig, serde_json::json!({ "installRig": { "name": name } }))
+                } else {
+                    let doc = std::fs::read_to_string(&path)?;
+                    (Kind::InstallRig, client.install_rig(&name, &doc).await?)
+                }
             }
+            RigCmd::Init { .. } => unreachable!("handled before client"),
             RigCmd::Delete { name } => (Kind::RemoveRig, client.remove_rig(&name).await?),
         },
         Commands::Shape { action } => match action {

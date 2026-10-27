@@ -277,12 +277,17 @@ impl Service {
 
     /// One rig by name.
     pub fn rig(&self, name: &str) -> Result<Option<Rig>, ServiceError> {
-        let path = self.paths.rig_file(name);
-        if !path.is_file() {
+        let pkg = self
+            .paths
+            .resolve_rig(name)
+            .map_err(|_| ServiceError::msg(format!(
+                "rig `{name}` has both `<name>.yaml` and `<name>/rig.yaml`"
+            )))?;
+        let Some(pkg) = pkg else {
             return Ok(None);
-        }
+        };
         Ok(Some(
-            load_rig(name, &path).map_err(|e| ServiceError::msg(e.to_string()))?,
+            load_rig(name, pkg.definition()).map_err(|e| ServiceError::msg(e.to_string()))?,
         ))
     }
 
@@ -338,18 +343,21 @@ impl Service {
             }
         };
 
-        // Prepare directories before stopping the previous session.
-        let rig_work = self.paths.rig_work(rig_name);
-        fs::create_dir_all(&rig_work).map_err(|e| ServiceError::msg(e.to_string()))?;
+        // Prepare session work before stopping the previous session.
         let session_work = self.paths.session_work(&id);
         fs::create_dir_all(&session_work).map_err(|e| ServiceError::msg(e.to_string()))?;
 
-        if mode == SessionMode::Fork {
-            let src = fork_from.unwrap();
-            let src_work = self.paths.session_work(src);
-            if src_work.exists() {
-                copy_dir_all(&src_work, &session_work)
-                    .map_err(|e| ServiceError::msg(e.to_string()))?;
+        match mode {
+            SessionMode::Fresh => {
+                self.seed_session_work(rig_name, &session_work)?;
+            }
+            SessionMode::Fork => {
+                let src = fork_from.unwrap();
+                let src_work = self.paths.session_work(src);
+                if src_work.exists() {
+                    copy_dir_all(&src_work, &session_work)
+                        .map_err(|e| ServiceError::msg(e.to_string()))?;
+                }
             }
         }
 
@@ -405,8 +413,6 @@ impl Service {
             .rig(&record.rig)?
             .ok_or_else(|| ServiceError::msg(format!("rig `{}` missing", record.rig)))?;
 
-        let rig_work = self.paths.rig_work(&record.rig);
-        fs::create_dir_all(&rig_work).map_err(|e| ServiceError::msg(e.to_string()))?;
         let session_work = self.paths.session_work(&record.id);
         fs::create_dir_all(&session_work).map_err(|e| ServiceError::msg(e.to_string()))?;
 
@@ -464,13 +470,8 @@ impl Service {
             readonly: false,
         });
         binds.push(BindMount {
-            source: self.paths.rig_work(&record.rig),
-            target: "/work".into(),
-            readonly: false,
-        });
-        binds.push(BindMount {
             source: self.paths.session_work(&record.id),
-            target: "/session".into(),
+            target: "/work".into(),
             readonly: false,
         });
         for b in &self.host.binds {
@@ -753,18 +754,73 @@ impl Service {
         Ok(true)
     }
 
-    /// Install a rig document (YAML).
+    /// Copy the package `work/` template into a new session work directory.
+    fn seed_session_work(&self, rig_name: &str, session_work: &Path) -> Result<(), ServiceError> {
+        let pkg = self
+            .paths
+            .resolve_rig(rig_name)
+            .map_err(|_| ServiceError::msg(format!(
+                "rig `{rig_name}` has both `<name>.yaml` and `<name>/rig.yaml`"
+            )))?
+            .ok_or_else(|| ServiceError::msg(format!("unknown rig `{rig_name}`")))?;
+        let Some(template) = pkg.work_template() else {
+            return Ok(());
+        };
+        if !template.is_dir() {
+            return Ok(());
+        }
+        copy_dir_all(template, session_work).map_err(|e| ServiceError::msg(e.to_string()))
+    }
+
+    /// Clear whichever package form exists for `name`.
+    fn clear_rig_package(&self, name: &str) -> Result<(), ServiceError> {
+        let file = self.paths.rig_file(name);
+        if file.exists() {
+            fs::remove_file(&file).map_err(|e| ServiceError::msg(e.to_string()))?;
+        }
+        let dir = self.paths.rig_dir(name);
+        if dir.exists() {
+            fs::remove_dir_all(&dir).map_err(|e| ServiceError::msg(e.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Install a single-file rig document (YAML).
     pub fn install_rig(&self, name: &str, document: &str) -> Result<Rig, ServiceError> {
         let rig =
             parse_rig(name, document).map_err(|e| ServiceError::msg(e.to_string()))?;
-        let path = self.paths.rig_file(name);
         fs::create_dir_all(self.paths.rigs_dir())
             .map_err(|e| ServiceError::msg(e.to_string()))?;
+        self.clear_rig_package(name)?;
+        let path = self.paths.rig_file(name);
         store::atomic_write(&path, document.as_bytes())
             .map_err(|e| ServiceError::msg(e.to_string()))?;
-        fs::create_dir_all(self.paths.rig_work(name))
-            .map_err(|e| ServiceError::msg(e.to_string()))?;
         Ok(rig)
+    }
+
+    /// Install a directory package already extracted under a temporary root.
+    ///
+    /// `src` must contain `rig.yaml` and may contain `work/`.
+    pub fn install_rig_dir(&self, name: &str, src: &Path) -> Result<Rig, ServiceError> {
+        let def = src.join("rig.yaml");
+        if !def.is_file() {
+            return Err(ServiceError::msg("package missing rig.yaml"));
+        }
+        let text = fs::read_to_string(&def).map_err(|e| ServiceError::msg(e.to_string()))?;
+        let rig = parse_rig(name, &text).map_err(|e| ServiceError::msg(e.to_string()))?;
+        fs::create_dir_all(self.paths.rigs_dir())
+            .map_err(|e| ServiceError::msg(e.to_string()))?;
+        self.clear_rig_package(name)?;
+        let dest = self.paths.rig_dir(name);
+        copy_dir_all(src, &dest).map_err(|e| ServiceError::msg(e.to_string()))?;
+        Ok(rig)
+    }
+
+    /// Install a directory package from an uncompressed tar archive.
+    pub fn install_rig_tar(&self, name: &str, archive: &[u8]) -> Result<Rig, ServiceError> {
+        let tmp = tempfile::tempdir().map_err(|e| ServiceError::msg(e.to_string()))?;
+        extract_package_tar(archive, tmp.path())?;
+        self.install_rig_dir(name, tmp.path())
     }
 
     /// Remove a rig; fails if it is the active session's rig.
@@ -776,10 +832,7 @@ impl Service {
                 ));
             }
         }
-        let path = self.paths.rig_file(name);
-        if path.exists() {
-            fs::remove_file(&path).map_err(|e| ServiceError::msg(e.to_string()))?;
-        }
+        self.clear_rig_package(name)?;
         Ok(true)
     }
 
@@ -873,6 +926,99 @@ fn format_system_endpoint(ep: &SystemEndpoint) -> String {
     } else {
         ep.port.clone()
     }
+}
+
+/// Extract an uncompressed tar of a directory package into `dest`.
+///
+/// Rejects absolute paths, `..`, and entries that would escape `dest`.
+pub fn extract_package_tar(archive: &[u8], dest: &Path) -> Result<(), ServiceError> {
+    use std::io::Cursor;
+    use tar::Archive;
+    fs::create_dir_all(dest).map_err(|e| ServiceError::msg(e.to_string()))?;
+    let mut archive = Archive::new(Cursor::new(archive));
+    let entries = archive
+        .entries()
+        .map_err(|e| ServiceError::msg(e.to_string()))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|e| ServiceError::msg(e.to_string()))?;
+        let path = entry
+            .path()
+            .map_err(|e| ServiceError::msg(e.to_string()))?
+            .into_owned();
+        if path.is_absolute() {
+            return Err(ServiceError::msg("package tar path is absolute"));
+        }
+        for c in path.components() {
+            match c {
+                Component::Normal(_) | Component::CurDir => {}
+                _ => {
+                    return Err(ServiceError::msg(
+                        "package tar path escapes destination",
+                    ));
+                }
+            }
+        }
+        let out = dest.join(&path);
+        if !out.starts_with(dest) {
+            return Err(ServiceError::msg(
+                "package tar path escapes destination",
+            ));
+        }
+        if entry.header().entry_type().is_dir() {
+            fs::create_dir_all(&out).map_err(|e| ServiceError::msg(e.to_string()))?;
+        } else {
+            if let Some(parent) = out.parent() {
+                fs::create_dir_all(parent).map_err(|e| ServiceError::msg(e.to_string()))?;
+            }
+            entry
+                .unpack(&out)
+                .map_err(|e| ServiceError::msg(e.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Build an uncompressed tar of a local directory package (for CLI/tests).
+pub fn pack_package_tar(src: &Path) -> Result<Vec<u8>, ServiceError> {
+    use std::io::Cursor;
+    use tar::Builder;
+    let mut buf = Cursor::new(Vec::new());
+    {
+        let mut builder = Builder::new(&mut buf);
+        append_dir(&mut builder, src, Path::new(""))?;
+        builder
+            .finish()
+            .map_err(|e| ServiceError::msg(e.to_string()))?;
+    }
+    Ok(buf.into_inner())
+}
+
+fn append_dir<W: io::Write>(
+    builder: &mut tar::Builder<W>,
+    src: &Path,
+    prefix: &Path,
+) -> Result<(), ServiceError> {
+    for entry in fs::read_dir(src).map_err(|e| ServiceError::msg(e.to_string()))? {
+        let entry = entry.map_err(|e| ServiceError::msg(e.to_string()))?;
+        let name = entry.file_name();
+        let rel = prefix.join(&name);
+        let path = entry.path();
+        let meta = entry
+            .metadata()
+            .map_err(|e| ServiceError::msg(e.to_string()))?;
+        if meta.is_dir() {
+            builder
+                .append_dir(&rel, &path)
+                .map_err(|e| ServiceError::msg(e.to_string()))?;
+            append_dir(builder, &path, &rel)?;
+        } else {
+            let mut file = File::open(&path).map_err(|e| ServiceError::msg(e.to_string()))?;
+            builder
+                .append_file(&rel, &mut file)
+                .map_err(|e| ServiceError::msg(e.to_string()))?;
+        }
+    }
+    Ok(())
 }
 
 fn sanitize_rel_path(path: &str) -> Result<String, ServiceError> {

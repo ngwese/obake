@@ -32,6 +32,9 @@ pub enum RigError {
     /// Link names an unknown instance or role.
     #[error("link refers to unknown endpoint `{0}`")]
     UnknownEndpoint(String),
+    /// Both file and directory package forms exist for one name.
+    #[error("rig `{0}` has both `<name>.yaml` and `<name>/rig.yaml`")]
+    NameConflict(String),
 }
 
 /// Port direction for a role.
@@ -309,25 +312,59 @@ pub fn load_rig(name: &str, path: &Path) -> Result<Rig, RigError> {
     parse_rig(name, &text)
 }
 
-/// Load every `*.yaml` in the rigs directory.
+/// Load every installed package under the rigs directory.
+///
+/// Accepts `*.yaml` files and subdirectories that contain `rig.yaml`.
+/// Fails closed when both forms exist for the same name.
 pub fn load_rigs(dir: &Path) -> Result<Vec<Rig>, RigError> {
     let mut out = Vec::new();
     if !dir.exists() {
         return Ok(out);
     }
+    let mut names: Vec<String> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     let mut entries: Vec<_> = fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+        if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("yaml") {
+            let name = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if !seen.insert(name.clone()) {
+                return Err(RigError::NameConflict(name));
+            }
+            names.push(name);
             continue;
         }
-        let name = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or_default()
-            .to_string();
-        out.push(load_rig(&name, &path)?);
+        if path.is_dir() {
+            let def = path.join("rig.yaml");
+            if !def.is_file() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if !seen.insert(name.clone()) {
+                return Err(RigError::NameConflict(name));
+            }
+            names.push(name);
+        }
+    }
+    names.sort();
+    for name in names {
+        let file = dir.join(format!("{name}.yaml"));
+        let def = dir.join(&name).join("rig.yaml");
+        match (file.is_file(), def.is_file()) {
+            (true, true) => return Err(RigError::NameConflict(name)),
+            (true, false) => out.push(load_rig(&name, &file)?),
+            (false, true) => out.push(load_rig(&name, &def)?),
+            (false, false) => {}
+        }
     }
     Ok(out)
 }
@@ -357,6 +394,23 @@ links: []
         assert_eq!(lead.roles[0].index, 1);
         assert_eq!(lead.roles[1].name, "bed");
         assert_eq!(lead.roles[1].index, 2);
+    }
+
+    #[test]
+    fn load_rigs_file_and_dir_and_conflict() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("duo.yaml"), LEAD).unwrap();
+        fs::create_dir_all(root.join("tone")).unwrap();
+        fs::write(root.join("tone/rig.yaml"), LEAD).unwrap();
+        let loaded = load_rigs(root).unwrap();
+        let names: Vec<_> = loaded.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["duo", "tone"]);
+
+        fs::write(root.join("tone.yaml"), LEAD).unwrap();
+        let err = load_rigs(root).unwrap_err();
+        assert!(matches!(err, RigError::NameConflict(_)));
     }
 
     #[test]

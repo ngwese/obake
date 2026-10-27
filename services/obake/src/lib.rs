@@ -7,6 +7,7 @@ pub mod auth;
 mod client;
 mod config;
 pub mod format;
+pub mod rig;
 pub mod xfer;
 
 pub use client::{Client, ClientError, Endpoint};

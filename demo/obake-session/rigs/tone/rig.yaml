@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 Greg Wuller
+# SPDX-License-Identifier: MIT
+#
+# Minimal stereo oscillator for checking MixPre / Ravenna system links.
+# Work file: tone.ck
+
+instances:
+  tone:
+    shape: chuck-alpine
+    command: ["--verbose", "--out:2", "tone.ck"]
+    roles:
+      out: [left, right]
+      in: []
+links: []

@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright 2026 Greg Wuller
+# SPDX-License-Identifier: MIT
+
+[package]
+name = "obake"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Client library and CLI for the obake-session GraphQL API"
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "obake"
+path = "src/lib.rs"
+
+[[bin]]
+name = "obake"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+http = { workspace = true }
+http-body = "1"
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+tokio-util = { workspace = true }
+futures-util = { workspace = true }
+bytes = { workspace = true }
+glob = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+libc = { workspace = true }
+tar = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
+axum = { workspace = true }
+http-body-util = { workspace = true }
+serde_json = { workspace = true }
+rcgen = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+obake-session = { path = "../obake-session" }

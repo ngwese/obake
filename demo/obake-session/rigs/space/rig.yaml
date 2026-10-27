@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: Copyright 2026 Greg Wuller
+# SPDX-License-Identifier: MIT
+#
+# Two ChucK sources into one rnbo-runner input (fan-in on role wet).
+# Work files: lead.ck, harmony.ck. Patch the RNBO runner separately.
+
+instances:
+  lead:
+    shape: chuck-alpine
+    command: ["--verbose", "--out:1", "lead.ck"]
+    roles:
+      out: [melody]
+      in: []
+  harmony:
+    shape: chuck-alpine
+    command: ["--verbose", "--out:1", "harmony.ck"]
+    roles:
+      out: [pad]
+      in: []
+  space:
+    shape: rnbo-runner
+    command: []
+    roles:
+      out: [dry]
+      in: [wet]
+links:
+  - from: lead.melody
+    to: space.wet
+  - from: harmony.pad
+    to: space.wet

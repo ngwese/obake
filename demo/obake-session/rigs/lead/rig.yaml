@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: Copyright 2026 Greg Wuller
+# SPDX-License-Identifier: MIT
+#
+# Single ChucK voice with two output roles. Work file: lead.ck
+# System-link melody/bed to MixPre or Ravenna after start.
+
+instances:
+  lead:
+    shape: chuck-alpine
+    command: ["--verbose", "--out:2", "lead.ck"]
+    roles:
+      out: [melody, bed]
+      in: []
+links: []

@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: Copyright 2026 Greg Wuller
+# SPDX-License-Identifier: MIT
+#
+# Example host profile. Seeded on the image when missing; edit in place.
+
+listen: "0.0.0.0:9477"
+environment:
+  OBAKE_HOST: demo
+binds: []
+# Uncomment when a sample tree exists on the host:
+# sample_library:
+#   source: /home/obake/samples
+#   target: /samples
+aliases:
+  mixpre:
+    card: II
+  adat:
+    card: ADAT
+  usbpre:
+    card: USBPre2

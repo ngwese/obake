@@ -13,16 +13,21 @@ use crate::launch::{
 use crate::links::{GraphOps, LinkState, LinkStatus, Reconciler};
 use crate::paths::Paths;
 use crate::shapes::{self, is_launchable, ShapeInfo};
+use crate::auth::LoginBook;
 use crate::store::{
     self, copy_dir_all, delete_session_file, ensure_token, list_sessions, read_current,
-    read_session, write_current, write_session, RoleRefSerde, SessionMode, SessionRecord,
-    SystemEndpoint, SystemLink,
+    read_session, write_current, write_session, write_token, RoleRefSerde, SessionMode,
+    SessionRecord, SystemEndpoint, SystemLink,
 };
+use crate::tls::ensure_host_cert;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
+use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -83,7 +88,10 @@ pub struct Service {
     launcher: Arc<dyn Launcher>,
     graph: Arc<dyn GraphOps>,
     inner: Mutex<Inner>,
-    token: String,
+    token: RwLock<String>,
+    fingerprint: RwLock<String>,
+    listen_port: AtomicU16,
+    logins: Mutex<LoginBook>,
     ravenna_available: bool,
 }
 
@@ -111,6 +119,13 @@ impl Service {
             .map(PathBuf::from)
             .unwrap_or_else(|| paths.default_image_dir.clone());
         let token = ensure_token(&paths).map_err(|e| ServiceError::msg(e.to_string()))?;
+        let (_cfg, fingerprint) =
+            ensure_host_cert(&paths).map_err(|e| ServiceError::msg(e.to_string()))?;
+        let listen_port = host
+            .listen
+            .parse::<SocketAddr>()
+            .map(|a| a.port())
+            .unwrap_or(9477);
         let ravenna_available = paths.ravenna_config_dir.join("config.toml").is_file();
         let (session_tx, _) = tokio::sync::broadcast::channel(64);
         let (links_tx, _) = tokio::sync::broadcast::channel(64);
@@ -126,7 +141,10 @@ impl Service {
                 session_tx,
                 links_tx,
             }),
-            token,
+            token: RwLock::new(token),
+            fingerprint: RwLock::new(fingerprint),
+            listen_port: AtomicU16::new(listen_port),
+            logins: Mutex::new(LoginBook::new()),
             ravenna_available,
         });
         Ok(svc)
@@ -154,9 +172,64 @@ impl Service {
         Ok(())
     }
 
-    /// TCP bearer token.
-    pub fn token(&self) -> &str {
-        &self.token
+    /// Current host bearer.
+    pub fn token(&self) -> String {
+        self.token.read().expect("token lock").clone()
+    }
+
+    /// Replace the bearer in memory and on disk. The certificate is unchanged.
+    pub fn rotate_token(&self) -> Result<String, ServiceError> {
+        let token = Uuid::new_v4().to_string();
+        write_token(&self.paths, &token).map_err(|e| ServiceError::msg(e.to_string()))?;
+        *self.token.write().expect("token lock") = token.clone();
+        Ok(token)
+    }
+
+    /// SHA-256 fingerprint of the TLS certificate (`sha256:` + hex).
+    pub fn fingerprint(&self) -> String {
+        self.fingerprint.read().expect("fingerprint lock").clone()
+    }
+
+    /// TCP port of the TLS listener.
+    pub fn listen_port(&self) -> u16 {
+        self.listen_port.load(Ordering::Relaxed)
+    }
+
+    /// Record the port actually bound (ephemeral test listeners).
+    pub fn set_listen_port(&self, port: u16) {
+        self.listen_port.store(port, Ordering::Relaxed);
+    }
+
+    /// Begin a browser device login.
+    pub fn start_login(&self) -> Result<crate::auth::LoginStart, ServiceError> {
+        self.logins
+            .lock()
+            .expect("login lock")
+            .start()
+            .map_err(ServiceError::msg)
+    }
+
+    /// Poll a device login. `Ok(true)` means the cookie may be set.
+    pub fn poll_login(&self, poll_secret: &str) -> Result<bool, ServiceError> {
+        self.logins
+            .lock()
+            .expect("login lock")
+            .poll(poll_secret)
+            .map_err(ServiceError::msg)
+    }
+
+    /// Mark a device code approved.
+    pub fn approve_login(&self, code: &str) -> Result<(), ServiceError> {
+        self.logins
+            .lock()
+            .expect("login lock")
+            .approve(code)
+            .map_err(ServiceError::msg)
+    }
+
+    /// Age pending logins (tests).
+    pub fn backdate_pending_logins(&self, by: Duration) {
+        self.logins.lock().expect("login lock").backdate(by);
     }
 
     /// Image directory.

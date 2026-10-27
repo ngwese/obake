@@ -3,6 +3,7 @@
 
 //! GraphQL client library for `obake-session`.
 
+pub mod auth;
 mod client;
 mod config;
 pub mod format;
@@ -10,7 +11,8 @@ pub mod xfer;
 
 pub use client::{Client, ClientError, Endpoint};
 pub use config::{
-    default_config_path, load_config, resolve_endpoint, ClientConfig, HostConfig, ResolveError,
-    Resolved,
+    default_config_path, load_config, missing_remote_setup, resolve_endpoint, runtime_base,
+    runtime_from, save_config,
+    ClientConfig, HostConfig, ResolveError, Resolved,
 };
 pub use format::Kind;

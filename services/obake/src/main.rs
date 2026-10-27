@@ -10,10 +10,13 @@ use obake::xfer::{
     expand_local_sources, is_dir_dest, is_remote_dir_dest, local_target_for_get,
     match_remote_sources, remote_target_for_put, split_src_dest,
 };
-use obake::{default_config_path, load_config, resolve_endpoint, Client, Kind};
+use obake::{
+    default_config_path, load_config, missing_remote_setup, resolve_endpoint, Client, Kind,
+    Resolved,
+};
 use serde_json::Value;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 use std::process::ExitCode;
 
@@ -81,6 +84,29 @@ enum Commands {
         #[arg(long, default_value = "session")]
         what: String,
     },
+    /// Enroll this CLI, approve a browser, or rotate the host bearer.
+    Auth {
+        #[command(subcommand)]
+        action: AuthCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum AuthCmd {
+    /// Copy the host bearer and certificate fingerprint over SSH.
+    Login {
+        /// `ssh-user@host`, for example `obake@studio.local`.
+        target: String,
+    },
+    /// Approve a browser device code.
+    Approve {
+        /// Code shown by the browser.
+        code: String,
+    },
+    /// Replace the host bearer. Browser cookies and other copies stop working.
+    Rotate,
+    /// Print bearer, port, and certificate fingerprint from the local socket.
+    Credential,
 }
 
 #[derive(Subcommand, Debug)]
@@ -191,6 +217,51 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config_path = cli.config.unwrap_or_else(default_config_path);
+    match &cli.command {
+        Commands::Auth {
+            action: AuthCmd::Login { target },
+        } => {
+            return obake::auth::login(&config_path, target).map_err(|e| e.into());
+        }
+        Commands::Auth {
+            action: AuthCmd::Credential,
+        } => {
+            return obake::auth::print_credential().await.map_err(|e| e.into());
+        }
+        Commands::Auth {
+            action: AuthCmd::Approve { code },
+        } => {
+            let config = load_config(&config_path)?;
+            let resolved = resolve_endpoint(
+                &config,
+                cli.host.as_deref(),
+                cli.endpoint.as_deref(),
+                cli.token.as_deref(),
+                None,
+            )?;
+            ensure_setup(&config_path, &resolved)?;
+            return obake::auth::approve(&resolved, code)
+                .await
+                .map_err(|e| e.into());
+        }
+        Commands::Auth {
+            action: AuthCmd::Rotate,
+        } => {
+            let config = load_config(&config_path)?;
+            let resolved = resolve_endpoint(
+                &config,
+                cli.host.as_deref(),
+                cli.endpoint.as_deref(),
+                cli.token.as_deref(),
+                None,
+            )?;
+            ensure_setup(&config_path, &resolved)?;
+            return obake::auth::rotate(&config_path, &resolved)
+                .await
+                .map_err(|e| e.into());
+        }
+        _ => {}
+    }
     let config = load_config(&config_path)?;
     let resolved = resolve_endpoint(
         &config,
@@ -199,6 +270,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         cli.token.as_deref(),
         None,
     )?;
+    ensure_setup(&config_path, &resolved)?;
     let client = Client::from_resolved(&resolved);
     let as_json = cli.json;
 
@@ -365,6 +437,7 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         },
         Commands::Watch { .. } => (Kind::Watch, Value::Null),
+        Commands::Auth { .. } => unreachable!("auth commands return before dispatch"),
     };
 
     if as_json {
@@ -373,6 +446,16 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     } else {
         print!("{}", format::render(kind, &data));
+    }
+    Ok(())
+}
+
+fn ensure_setup(
+    config_path: &Path,
+    resolved: &Resolved,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(hint) = missing_remote_setup(config_path, resolved) {
+        return Err(hint.into());
     }
     Ok(())
 }

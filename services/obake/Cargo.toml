@@ -36,6 +36,11 @@ tokio-util = { workspace = true }
 futures-util = { workspace = true }
 bytes = { workspace = true }
 glob = { workspace = true }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+sha2 = { workspace = true }
+subtle = { workspace = true }
+libc = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -43,3 +48,8 @@ tokio = { workspace = true, features = ["test-util"] }
 axum = { workspace = true }
 http-body-util = { workspace = true }
 serde_json = { workspace = true }
+rcgen = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+obake-session = { path = "../obake-session" }

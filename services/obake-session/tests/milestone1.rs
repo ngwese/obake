@@ -618,7 +618,6 @@ async fn tcp_auth_and_unix_no_auth() {
     use tokio::net::{TcpListener, UnixStream};
 
     let (_dir, service, _l, _g) = setup();
-    let schema = obake_session::graphql::build_schema(service.clone());
     let token = service.token().to_string();
 
     // Unix socket without token
@@ -645,88 +644,79 @@ async fn tcp_auth_and_unix_no_auth() {
     let res = sender.send_request(req).await.unwrap();
     assert_eq!(res.status(), 200);
 
-    // TCP with/without token — serve on ephemeral port
+    // TLS with/without token, and plaintext rejected.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let app_token = token.clone();
-    let schema2 = schema.clone();
+    let svc_tls = service.clone();
     tokio::spawn(async move {
-        use axum::routing::get;
-        use axum::{middleware, Router};
-        use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
-
-        #[derive(Clone)]
-        struct St {
-            schema: obake_session::graphql::AppSchema,
-            token: String,
-        }
-        async fn handler(
-            axum::extract::State(st): axum::extract::State<St>,
-            req: GraphQLRequest,
-        ) -> GraphQLResponse {
-            st.schema.execute(req.into_inner()).await.into()
-        }
-        async fn auth(
-            axum::extract::State(st): axum::extract::State<St>,
-            req: axum::http::Request<Body>,
-            next: middleware::Next,
-        ) -> Result<axum::response::Response, axum::http::StatusCode> {
-            let ok = req
-                .headers()
-                .get("authorization")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.strip_prefix("Bearer "))
-                .map(|t| t == st.token)
-                .unwrap_or(false);
-            if !ok {
-                return Err(axum::http::StatusCode::UNAUTHORIZED);
-            }
-            Ok(next.run(req).await)
-        }
-        let st = St {
-            schema: schema2,
-            token: app_token,
-        };
-        let app = Router::new()
-            .route("/api/v0/", get(|| async { "ok" }).post(handler))
-            .layer(middleware::from_fn_with_state(st.clone(), auth))
-            .with_state(st);
-        axum::serve(listener, app).await.ok();
+        obake_session::graphql::serve_tls_on(svc_tls, listener)
+            .await
+            .ok();
     });
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
 
-    let client = reqwest_like_post(&addr, None, r#"{"query":"{ rigs { name } }"}"#).await;
-    assert_eq!(client, 401);
+    let mut plain = tokio::net::TcpStream::connect(addr).await.unwrap();
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    plain
+        .write_all(b"GET /api/v0/ HTTP/1.1\r\nHost: localhost\r\n\r\n")
+        .await
+        .unwrap();
+    let mut buf = [0u8; 32];
+    let n = tokio::time::timeout(std::time::Duration::from_secs(2), plain.read(&mut buf))
+        .await;
+    let bytes = match n {
+        Ok(Ok(n)) => &buf[..n],
+        _ => &[],
+    };
+    assert!(
+        !bytes.starts_with(b"HTTP/1.1 200"),
+        "plaintext was accepted: {bytes:?}"
+    );
 
-    let client = reqwest_like_post(
+    let status = tls_post(&addr, &service.fingerprint(), None, r#"{"query":"{ rigs { name } }"}"#).await;
+    assert_eq!(status, 401);
+    let status = tls_post(
         &addr,
+        &service.fingerprint(),
         Some(&token),
         r#"{"query":"{ rigs { name } }"}"#,
     )
     .await;
-    assert_eq!(client, 200);
+    assert_eq!(status, 200);
 }
 
-async fn reqwest_like_post(
+#[path = "common/pin.rs"]
+mod pin;
+
+async fn tls_post(
     addr: &std::net::SocketAddr,
+    fingerprint: &str,
     token: Option<&str>,
     body: &str,
 ) -> u16 {
     use axum::body::Body;
     use hyper::client::conn::http1;
     use hyper_util::rt::TokioIo;
+    use std::sync::Arc;
     use tokio::net::TcpStream;
+    use tokio_rustls::TlsConnector;
 
-    let stream = TcpStream::connect(addr).await.unwrap();
-    let io = TokioIo::new(stream);
+    let tcp = TcpStream::connect(addr).await.unwrap();
+    let connector = TlsConnector::from(Arc::new(pin::client_config(fingerprint)));
+    let tls = connector
+        .connect(pin::server_name(), tcp)
+        .await
+        .unwrap();
+    let io = TokioIo::new(tls);
     let (mut sender, conn) = http1::handshake(io).await.unwrap();
     tokio::spawn(async move {
         let _ = conn.await;
     });
     let mut builder = hyper::Request::builder()
         .method("POST")
-        .uri("http://localhost/api/v0/")
-        .header("content-type", "application/json");
+        .uri("https://localhost/api/v0/")
+        .header("content-type", "application/json")
+        .header("host", "localhost");
     if let Some(t) = token {
         builder = builder.header("authorization", format!("Bearer {t}"));
     }

@@ -3,6 +3,7 @@
 
 //! async-graphql types matching design.md.
 
+use crate::auth::Cred;
 use crate::config::RoleDirection as CfgDir;
 use crate::links::LinkState as LinkStateEnum;
 use crate::service::{ActiveSession, Service, SessionPhase as PhaseEnum};
@@ -500,6 +501,30 @@ impl MutationRoot {
         svc(ctx)?
             .set_ravenna_streams(&sources, &sinks)
             .map_err(|e| async_graphql::Error::new(e.to_string()))
+    }
+
+    async fn approve_login(&self, ctx: &Context<'_>, code: String) -> Result<bool> {
+        require_operator(ctx)?;
+        svc(ctx)?
+            .approve_login(&code)
+            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
+        Ok(true)
+    }
+
+    async fn rotate_auth(&self, ctx: &Context<'_>) -> Result<String> {
+        require_operator(ctx)?;
+        svc(ctx)?
+            .rotate_token()
+            .map_err(|e| async_graphql::Error::new(e.to_string()))
+    }
+}
+
+fn require_operator(ctx: &Context<'_>) -> Result<()> {
+    match ctx.data::<Cred>() {
+        Ok(Cred::Socket | Cred::Bearer) => Ok(()),
+        _ => Err(async_graphql::Error::new(
+            "approve and rotate require the host bearer or the local socket",
+        )),
     }
 }
 

@@ -8,19 +8,38 @@ without PipeWire, JACK, Singularity, or the session crate.
 `$XDG_CONFIG_HOME/obake/config.yaml` (or `~/.config/obake/config.yaml`):
 
 ```yaml
-default: studio
+default: studio.local
 hosts:
-  studio:
-    endpoint: http://192.168.60.10:9477
+  studio.local:
+    endpoint: https://studio.local:9477
     token: <bearer>
-  spare:
-    endpoint: http://192.168.60.11:9477
+    fingerprint: sha256:<hex of the certificate>
+  spare.local:
+    endpoint: https://spare.local:9477
     token: <bearer>
+    fingerprint: sha256:<hex of the certificate>
 ```
 
 Resolution: `--endpoint` / `--token` > `--host` > `default` > local Unix socket.
-A missing config file is fine (Unix socket). An unknown `--host` fails before
-any request. `--config` selects another file.
+A missing config file uses the Unix socket when that socket exists. When
+neither the file nor the socket is present, the command tells you to run
+`obake auth login <ssh-user@host>`. An unknown `--host` fails before
+any request. `--config` selects another file. An `https://` host without a
+fingerprint, or whose certificate does not match the fingerprint, fails
+before a GraphQL operation or file transfer.
+
+```bash
+obake auth login obake@studio.local
+obake auth approve K7QM-2P9X
+obake auth rotate
+```
+
+`auth login` runs `ssh` and stores that host's bearer and certificate
+fingerprint. The host part of `user@host` is the config name. `auth
+approve` accepts a browser device code on the selected host (the Unix
+socket when no config is present). `auth rotate` replaces the bearer and
+updates the selected host entry; the fingerprint stays. `auth` is the
+documented noun that is not a schema entity.
 
 ## Output
 

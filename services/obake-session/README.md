@@ -2,18 +2,33 @@
 
 Rig and session daemon for the obake host. Serves GraphQL for launching
 shapes, applying links, and restoring sessions across reboot. Session
-work-area bytes are transferred over HTTP on the same listeners.
+work-area bytes are transferred over HTTPS on the same listeners.
 
 ## Listeners
 
 | Listener | Path / address | Auth |
 |---|---|---|
 | Unix socket | `$XDG_RUNTIME_DIR/obake-session/api.sock` | none |
-| TCP | `host.yaml` `listen` (default `0.0.0.0:9477`) | `Authorization: Bearer` from `token` file |
+| TLS | `host.yaml` `listen` (default `0.0.0.0:9477`) | bearer or browser cookie |
 
-The HTTP API is rooted at `/api/v0/`. GET `/api/v0/` serves GraphiQL v2
-(subscriptions on `/api/v0/ws`). On TCP, GraphiQL needs the bearer token
-in the request headers.
+Plaintext HTTP on the listen address is rejected. The HTTP API is rooted
+at `/api/v0/`. GET `/api/v0/` serves GraphiQL v2 (subscriptions on
+`/api/v0/ws`).
+
+A browser opens `/api/v0/login`, which shows a device code. `obake auth
+approve <code>` on the host (Unix socket) or from an enrolled CLI accepts
+it. The browser then keeps a long-lived cookie. That cookie authorizes
+GraphQL, the websocket, and file transfer. It does not approve further
+browsers, rotate the bearer, or read the credential.
+
+`obake auth rotate` replaces the bearer in the running service. Existing
+cookies and other copies of the bearer stop working. The TLS certificate
+does not change.
+
+`obake auth credential` on the Unix socket prints JSON
+`{"token","port","fingerprint"}`. The TLS listener does not serve that
+route. When `XDG_RUNTIME_DIR` is unset the socket is
+`/run/user/<uid>/obake-session/api.sock`.
 
 ## Session file HTTP
 
@@ -36,6 +51,8 @@ active session and fails when idle. Listing stays on GraphQL
 ~/.config/obake-session/host.yaml
 ~/.config/obake-session/rigs/<name>.yaml
 ~/.config/obake-session/token          # created 0600 if missing
+~/.config/obake-session/tls.crt        # self-signed cert, mode 0600
+~/.config/obake-session/tls.key        # mode 0600
 ~/.local/state/obake-session/current
 ~/.local/state/obake-session/sessions/<id>.yaml
 ~/.local/share/obake-session/rigs/<name>/work

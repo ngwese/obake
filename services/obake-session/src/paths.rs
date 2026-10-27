@@ -79,9 +79,19 @@ impl Paths {
         self.config_dir.join("host.yaml")
     }
 
-    /// Bearer token file for the TCP listener.
+    /// Bearer token file for the TLS listener.
     pub fn token_file(&self) -> PathBuf {
         self.config_dir.join("token")
+    }
+
+    /// PEM certificate for the TLS listener.
+    pub fn tls_cert_file(&self) -> PathBuf {
+        self.config_dir.join("tls.crt")
+    }
+
+    /// PEM private key for the TLS listener.
+    pub fn tls_key_file(&self) -> PathBuf {
+        self.config_dir.join("tls.key")
     }
 
     /// Rig document directory.

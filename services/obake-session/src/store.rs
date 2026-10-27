@@ -229,6 +229,23 @@ pub fn ensure_token(paths: &Paths) -> Result<String, StoreError> {
     }
 }
 
+/// Replace the bearer token file atomically (mode 0600).
+pub fn write_token(paths: &Paths, token: &str) -> Result<(), StoreError> {
+    let path = paths.token_file();
+    fs::create_dir_all(paths.config_dir.as_path())?;
+    let tmp = path.with_extension("tmp");
+    let mut f = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    f.write_all(token.as_bytes())?;
+    f.sync_all()?;
+    fs::rename(&tmp, &path)?;
+    Ok(())
+}
+
 /// Recursively copy a directory tree.
 pub fn copy_dir_all(src: &Path, dst: &Path) -> io::Result<()> {
     fs::create_dir_all(dst)?;

@@ -158,6 +158,7 @@ async fn each_subcommand_records_one_operation() {
     let client = Client::new(Endpoint::Http {
         url: format!("http://{addr}/"),
         token: None,
+        fingerprint: None,
     });
 
     let _ = client.rigs().await;
@@ -200,6 +201,7 @@ async fn file_get_put_http_and_session_flag() {
     let client = Client::new(Endpoint::Http {
         url: format!("http://{addr}/"),
         token: None,
+        fingerprint: None,
     });
 
     let dir = tempdir().unwrap();

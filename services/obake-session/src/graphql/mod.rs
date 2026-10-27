@@ -7,17 +7,24 @@ mod schema;
 
 pub use schema::{build_schema, AppSchema};
 
+use crate::auth::{self, browser_cookie, cookie_value, set_cookie_header, Cred};
 use crate::service::Service;
-use crate::store::ensure_token;
+use crate::tls::ensure_host_cert;
 use async_graphql::http::GraphiQLSource;
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse, GraphQLSubscription};
 use axum::body::Body;
-use axum::extract::{DefaultBodyLimit, Path, Request, State};
+use axum::extract::{DefaultBodyLimit, Extension, Json, Path, Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
+use axum::serve::Listener;
 use axum::Router;
+use serde::Deserialize;
+use serde_json::json;
+use std::io;
+use tokio::net::TcpStream;
+use tokio_rustls::TlsAcceptor;
 use futures_util::StreamExt;
 use log::{debug, trace};
 use std::net::SocketAddr;
@@ -31,15 +38,15 @@ use tokio_util::io::ReaderStream;
 struct AppState {
     schema: AppSchema,
     service: Arc<Service>,
-    token: String,
     require_auth: bool,
 }
 
 async fn graphql_handler(
     State(state): State<AppState>,
+    Extension(cred): Extension<Cred>,
     req: GraphQLRequest,
 ) -> GraphQLResponse {
-    let request = req.into_inner();
+    let request = req.into_inner().data(cred);
     debug!(
         target: "obake_session::http",
         "graphql request query={} variables={}",
@@ -122,29 +129,57 @@ async fn request_log_middleware(req: Request, next: Next) -> Response {
     res
 }
 
+fn is_public(path: &str) -> bool {
+    path == format!("{API_V0}/login")
+        || path == format!("{API_V0}/login/start")
+        || path == format!("{API_V0}/login/poll")
+}
+
+fn request_cred(state: &AppState, req: &Request) -> Option<Cred> {
+    if !state.require_auth {
+        return Some(Cred::Socket);
+    }
+    if is_public(req.uri().path()) {
+        // Login routes are unauthenticated and must not count as the bearer.
+        return Some(Cred::Cookie);
+    }
+    let bearer = state.service.token();
+    let header_ok = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .is_some_and(|t| auth::ct_eq(t, &bearer));
+    if header_ok {
+        return Some(Cred::Bearer);
+    }
+    let cookie_ok = req
+        .headers()
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(cookie_value)
+        .is_some_and(|c| auth::ct_eq(c, &browser_cookie(&bearer)));
+    if cookie_ok {
+        return Some(Cred::Cookie);
+    }
+    None
+}
+
 async fn auth_middleware(
     State(state): State<AppState>,
-    req: Request,
+    mut req: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    if state.require_auth {
-        let ok = req
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.strip_prefix("Bearer "))
-            .map(|t| t == state.token)
-            .unwrap_or(false);
-        if !ok {
-            debug!(
-                target: "obake_session::http",
-                "auth rejected {} {}",
-                req.method(),
-                req.uri()
-            );
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-    }
+    let Some(cred) = request_cred(&state, &req) else {
+        debug!(
+            target: "obake_session::http",
+            "auth rejected {} {}",
+            req.method(),
+            req.uri()
+        );
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    req.extensions_mut().insert(cred);
     Ok(next.run(req).await)
 }
 
@@ -366,11 +401,10 @@ fn escape_payload(data: &[u8]) -> String {
     }
 }
 
-fn app_router(schema: AppSchema, service: Arc<Service>, token: String, require_auth: bool) -> Router {
+fn app_router(schema: AppSchema, service: Arc<Service>, require_auth: bool) -> Router {
     let state = AppState {
         schema: schema.clone(),
         service,
-        token,
         require_auth,
     };
     let files = Router::new()
@@ -379,7 +413,7 @@ fn app_router(schema: AppSchema, service: Arc<Service>, token: String, require_a
             get(get_session_file).put(put_session_file),
         )
         .layer(DefaultBodyLimit::disable());
-    Router::new()
+    let mut router = Router::new()
         .route(
             &format!("{API_V0}/"),
             get(graphql_ide).post(graphql_handler),
@@ -388,13 +422,69 @@ fn app_router(schema: AppSchema, service: Arc<Service>, token: String, require_a
             &format!("{API_V0}/ws"),
             GraphQLSubscription::new(schema),
         )
-        .merge(files)
+        .route(&format!("{API_V0}/login"), get(login_page))
+        .route(&format!("{API_V0}/login/start"), post(login_start))
+        .route(&format!("{API_V0}/login/poll"), post(login_poll))
+        .merge(files);
+    if !require_auth {
+        router = router.route(&format!("{API_V0}/credential"), get(credential));
+    }
+    router
         .layer(middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
         ))
         .layer(middleware::from_fn(request_log_middleware))
         .with_state(state)
+}
+
+async fn login_page() -> impl IntoResponse {
+    Html(auth::login_html())
+}
+
+async fn login_start(State(state): State<AppState>) -> Response {
+    match state.service.start_login() {
+        Ok(started) => (
+            StatusCode::OK,
+            Json(json!({
+                "userCode": started.user_code,
+                "pollSecret": started.poll_secret,
+                "intervalMs": 2000,
+            })),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::SERVICE_UNAVAILABLE, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct PollBody {
+    #[serde(rename = "pollSecret")]
+    poll_secret: String,
+}
+
+async fn login_poll(State(state): State<AppState>, Json(body): Json<PollBody>) -> Response {
+    match state.service.poll_login(&body.poll_secret) {
+        Ok(true) => {
+            let cookie = set_cookie_header(&browser_cookie(&state.service.token()));
+            (
+                StatusCode::OK,
+                [(header::SET_COOKIE, cookie)],
+                Json(json!({"status": "approved"})),
+            )
+                .into_response()
+        }
+        Ok(false) => (StatusCode::OK, Json(json!({"status": "pending"}))).into_response(),
+        Err(_) => (StatusCode::OK, Json(json!({"status": "unknown"}))).into_response(),
+    }
+}
+
+async fn credential(State(state): State<AppState>) -> impl IntoResponse {
+    Json(json!({
+        "token": state.service.token(),
+        "port": state.service.listen_port(),
+        "fingerprint": state.service.fingerprint(),
+    }))
 }
 
 /// Serve GraphQL and session-file HTTP on a Unix socket (no auth).
@@ -409,25 +499,63 @@ pub async fn serve_unix(
         std::fs::create_dir_all(parent)?;
     }
     let schema = build_schema(service.clone());
-    let token = service.token().to_string();
-    let app = app_router(schema, service, token, false);
+    let app = app_router(schema, service, false);
     let listener = UnixListener::bind(socket_path)?;
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-/// Serve GraphQL and session-file HTTP on TCP (bearer auth required).
+/// Serve GraphQL and session-file HTTP on TLS (bearer or browser cookie).
 pub async fn serve_tcp(
     service: Arc<Service>,
     listen: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let schema = build_schema(service.clone());
-    let token = ensure_token(service.paths()).map_err(|e| e.to_string())?;
-    let app = app_router(schema, service, token, true);
     let addr: SocketAddr = listen.parse()?;
     let listener = TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    serve_tls_on(service, listener).await
+}
+
+/// Serve the TLS listener on an already-bound socket (tests bind port 0).
+pub async fn serve_tls_on(
+    service: Arc<Service>,
+    listener: TcpListener,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let port = listener.local_addr()?.port();
+    service.set_listen_port(port);
+    let (server_config, _fp) = ensure_host_cert(service.paths()).map_err(|e| e.to_string())?;
+    let schema = build_schema(service.clone());
+    let app = app_router(schema, service, true);
+    let tls = TlsListener {
+        inner: listener,
+        acceptor: TlsAcceptor::from(server_config),
+    };
+    axum::serve(tls, app).await?;
     Ok(())
+}
+
+struct TlsListener {
+    inner: TcpListener,
+    acceptor: TlsAcceptor,
+}
+
+impl Listener for TlsListener {
+    type Io = tokio_rustls::server::TlsStream<TcpStream>;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            let Ok((tcp, addr)) = self.inner.accept().await else {
+                continue;
+            };
+            if let Ok(stream) = self.acceptor.accept(tcp).await {
+                return (stream, addr);
+            }
+        }
+    }
+
+    fn local_addr(&self) -> io::Result<Self::Addr> {
+        self.inner.local_addr()
+    }
 }
 
 /// Run both listeners until cancelled.
@@ -482,6 +610,5 @@ pub fn router_for_tests(
     require_auth: bool,
 ) -> Router {
     let schema = build_schema(service.clone());
-    let token = service.token().to_string();
-    app_router(schema, service, token, require_auth)
+    app_router(schema, service, require_auth)
 }

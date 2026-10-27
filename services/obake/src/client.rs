@@ -3,6 +3,9 @@
 
 //! HTTP / Unix GraphQL transport.
 
+#[path = "pin.rs"]
+mod pin;
+
 use crate::config::Resolved;
 use bytes::Bytes;
 use futures_util::TryStreamExt;
@@ -14,8 +17,11 @@ use log::{debug, trace};
 use serde_json::{json, Value};
 use std::path::Path;
 use thiserror::Error;
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use std::pin::Pin;
+use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpStream, UnixStream};
+use tokio_rustls::client::TlsStream;
 use tokio_util::io::ReaderStream;
 
 /// Read/write chunk size for session-file HTTP (~1 MiB).
@@ -45,7 +51,11 @@ impl ClientError {
 #[derive(Debug, Clone)]
 pub enum Endpoint {
     /// HTTP(S) URL.
-    Http { url: String, token: Option<String> },
+    Http {
+        url: String,
+        token: Option<String>,
+        fingerprint: Option<String>,
+    },
     /// Unix domain socket path.
     Unix { path: String },
 }
@@ -61,6 +71,7 @@ impl Endpoint {
             Endpoint::Http {
                 url: r.endpoint.clone(),
                 token: r.token.clone(),
+                fingerprint: r.fingerprint.clone(),
             }
         }
     }
@@ -138,7 +149,8 @@ impl Client {
 
     async fn post_json(&self, body: Vec<u8>) -> Result<Vec<u8>, ClientError> {
         match &self.endpoint {
-            Endpoint::Http { url, token } => {
+            Endpoint::Http { url, token, fingerprint } => {
+                ensure_pin(url, fingerprint)?;
                 let gql = join_api_root(url);
                 debug!(
                     target: "obake::client",
@@ -146,8 +158,7 @@ impl Client {
                     gql,
                     body.len()
                 );
-                let stream = connect_http(url).await?;
-                let io = TokioIo::new(stream);
+                let io = connect_io(url, fingerprint.as_deref()).await?;
                 let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
                     .await
                     .map_err(|e| ClientError::msg(e.to_string()))?;
@@ -504,9 +515,9 @@ impl Client {
         B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     {
         match &self.endpoint {
-            Endpoint::Http { url, token } => {
-                let stream = connect_http(url).await?;
-                let io = TokioIo::new(stream);
+            Endpoint::Http { url, token, fingerprint } => {
+                ensure_pin(url, fingerprint)?;
+                let io = connect_io(url, fingerprint.as_deref()).await?;
                 let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
                     .await
                     .map_err(|e| ClientError::msg(e.to_string()))?;
@@ -600,6 +611,47 @@ impl Client {
             .await
     }
 
+    /// Approve a browser device code.
+    pub async fn approve_login(&self, code: &str) -> Result<(), ClientError> {
+        let data = self
+            .execute(
+                "mutation($c: String!) { approveLogin(code: $c) }",
+                Some(json!({ "c": code })),
+            )
+            .await?;
+        if data.get("approveLogin").and_then(|v| v.as_bool()) == Some(true) {
+            Ok(())
+        } else {
+            Err(ClientError::msg(format!("approve failed: {data}")))
+        }
+    }
+
+    /// Rotate the host bearer. Returns the new bearer.
+    pub async fn rotate_auth(&self) -> Result<String, ClientError> {
+        let data = self.execute("mutation { rotateAuth }", None).await?;
+        data.get("rotateAuth")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| ClientError::msg(format!("rotate failed: {data}")))
+    }
+
+    /// GET a path and return the body bytes.
+    pub async fn get_raw(&self, path: &str) -> Result<Vec<u8>, ClientError> {
+        let res = self
+            .send_file_request_len("GET", path, Full::new(Bytes::new()), Some(0))
+            .await?;
+        let status = res.status();
+        let collected = res
+            .into_body()
+            .collect()
+            .await
+            .map_err(|e| ClientError::msg(e.to_string()))?;
+        if !status.is_success() {
+            return Err(ClientError::msg(format!("http {status}")));
+        }
+        Ok(collected.to_bytes().to_vec())
+    }
+
     /// Set Ravenna streams.
     pub async fn ravenna_set(&self, sources: Value, sinks: Value) -> Result<Value, ClientError> {
         self.execute(
@@ -671,6 +723,80 @@ fn encode_segment(seg: &str) -> String {
         }
     }
     out
+}
+
+fn ensure_pin(url: &str, fingerprint: &Option<String>) -> Result<(), ClientError> {
+    if url.starts_with("https://")
+        && fingerprint.as_ref().map(|s| s.is_empty()).unwrap_or(true)
+    {
+        return Err(ClientError::msg(
+            "https endpoint requires a certificate fingerprint",
+        ));
+    }
+    Ok(())
+}
+
+enum Conn {
+    Tcp(TcpStream),
+    Tls(TlsStream<TcpStream>),
+}
+
+impl AsyncRead for Conn {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Conn::Tcp(s) => Pin::new(s).poll_read(cx, buf),
+            Conn::Tls(s) => Pin::new(s).poll_read(cx, buf),
+        }
+    }
+}
+
+impl AsyncWrite for Conn {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            Conn::Tcp(s) => Pin::new(s).poll_write(cx, buf),
+            Conn::Tls(s) => Pin::new(s).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Conn::Tcp(s) => Pin::new(s).poll_flush(cx),
+            Conn::Tls(s) => Pin::new(s).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        match self.get_mut() {
+            Conn::Tcp(s) => Pin::new(s).poll_shutdown(cx),
+            Conn::Tls(s) => Pin::new(s).poll_shutdown(cx),
+        }
+    }
+}
+
+async fn connect_io(url: &str, fingerprint: Option<&str>) -> Result<TokioIo<Conn>, ClientError> {
+    let tcp = connect_http(url).await?;
+    if url.starts_with("https://") {
+        let fp = fingerprint.unwrap_or("");
+        let (host, _) = parse_host_port(url)?;
+        let config = pin::client_config(fp).map_err(ClientError::msg)?;
+        let name = pin::server_name(&host).map_err(ClientError::msg)?;
+        let connector = tokio_rustls::TlsConnector::from(std::sync::Arc::new(config));
+        let tls = connector
+            .connect(name, tcp)
+            .await
+            .map_err(|e| ClientError::msg(e.to_string()))?;
+        Ok(TokioIo::new(Conn::Tls(tls)))
+    } else {
+        Ok(TokioIo::new(Conn::Tcp(tcp)))
+    }
 }
 
 async fn connect_http(url: &str) -> Result<TcpStream, ClientError> {

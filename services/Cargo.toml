@@ -15,7 +15,7 @@ publish = false
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "signal", "sync", "time", "fs"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "signal", "sync", "time", "fs"] }
 log = "0.4"
 env_logger = "0.11"
 serde_yaml = "0.9"
@@ -32,10 +32,12 @@ tower-http = { version = "0.6", features = ["cors"] }
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
+tokio-util = { version = "0.7", features = ["io"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 async-stream = "0.3"
 toml = "0.8"
 bytes = "1"
+glob = "0.3"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 pipewire = "0.10"
 libc = "0.2"

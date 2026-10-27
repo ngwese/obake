@@ -27,8 +27,6 @@ pub enum Kind {
     Links,
     /// `sessionFiles`.
     Files,
-    /// `sessionFile`.
-    File,
     /// `deleteSession`.
     DeleteSession,
     /// `installRig`.
@@ -55,7 +53,6 @@ pub fn render(kind: Kind, data: &Value) -> String {
         Kind::Stop => format_bool("stopped", data.get("stopSession").unwrap_or(data)),
         Kind::Links => format_links_result(data.get("setSystemLinks").unwrap_or(data)),
         Kind::Files => format_files(data.get("sessionFiles").unwrap_or(data)),
-        Kind::File => format_file(data.get("sessionFile").unwrap_or(data)),
         Kind::DeleteSession => {
             format_bool("deleted", data.get("deleteSession").unwrap_or(data))
         }
@@ -282,18 +279,6 @@ fn format_files(v: &Value) -> String {
         })
         .collect();
     table(&["PATH", "SIZE", "DIR"], &rows)
-}
-
-fn format_file(v: &Value) -> String {
-    if v.is_null() {
-        return "no such file\n".into();
-    }
-    let b64 = str_field(v, "base64");
-    format!(
-        "path:   {}\nbytes:  {} (base64)\n",
-        str_field(v, "path"),
-        b64.len()
-    )
 }
 
 fn format_install(v: &Value) -> String {

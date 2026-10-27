@@ -200,12 +200,6 @@ struct SessionFile {
 }
 
 #[derive(SimpleObject)]
-struct SessionFileContent {
-    path: String,
-    base64: String,
-}
-
-#[derive(SimpleObject)]
 struct GraphPort {
     name: String,
     direction: Direction,
@@ -397,18 +391,6 @@ impl QueryRoot {
                 directory: f.directory,
             })
             .collect())
-    }
-
-    async fn session_file(
-        &self,
-        ctx: &Context<'_>,
-        id: ID,
-        path: String,
-    ) -> Result<SessionFileContent> {
-        let (path, base64) = svc(ctx)?
-            .session_file(id.as_str(), &path)
-            .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(SessionFileContent { path, base64 })
     }
 
     async fn graph(&self, ctx: &Context<'_>) -> Result<Vec<GraphNode>> {

@@ -7,7 +7,7 @@ use crate::config::RoleRef;
 use crate::paths::Paths;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use thiserror::Error;
@@ -101,6 +101,14 @@ pub struct SessionRecord {
 
 /// Write `path` atomically: temp sibling, fsync file, rename, fsync dir.
 pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
+    atomic_write_from_reader(path, &mut io::Cursor::new(bytes))
+}
+
+/// Stream `reader` into `path` atomically (temp sibling, fsync, rename).
+///
+/// On any error after creating the temp file, the temp is removed and the
+/// previous contents of `path` (if any) are left unchanged.
+pub fn atomic_write_from_reader(path: &Path, reader: &mut dyn Read) -> Result<(), StoreError> {
     let parent = path.parent().ok_or_else(|| {
         StoreError::Io(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -114,20 +122,26 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
             .and_then(|s| s.to_str())
             .unwrap_or("write")
     ));
-    {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o644)
-            .open(&tmp)?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
+    let result = (|| -> Result<(), StoreError> {
+        {
+            let mut f = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o644)
+                .open(&tmp)?;
+            io::copy(reader, &mut f)?;
+            f.sync_all()?;
+        }
+        fs::rename(&tmp, path)?;
+        let dir = File::open(parent)?;
+        dir.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
     }
-    fs::rename(&tmp, path)?;
-    let dir = File::open(parent)?;
-    dir.sync_all()?;
-    Ok(())
+    result
 }
 
 /// Persist a session snapshot.

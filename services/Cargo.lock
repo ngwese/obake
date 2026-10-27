@@ -1293,10 +1293,13 @@ name = "obake"
 version = "0.1.0"
 dependencies = [
  "axum",
- "base64",
+ "bytes",
  "clap",
  "env_logger",
+ "futures-util",
+ "glob",
  "http",
+ "http-body",
  "http-body-util",
  "hyper",
  "hyper-util",
@@ -1307,6 +1310,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -1336,7 +1340,6 @@ dependencies = [
  "async-graphql-axum",
  "async-stream",
  "axum",
- "base64",
  "clap",
  "env_logger",
  "futures-util",
@@ -1351,6 +1354,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-util",
  "toml 0.8.23",
  "tower",
  "tower-http",

@@ -4,14 +4,25 @@
 //! HTTP / Unix GraphQL transport.
 
 use crate::config::Resolved;
-use http_body_util::{BodyExt, Full};
-use hyper::body::Bytes;
+use bytes::Bytes;
+use futures_util::TryStreamExt;
+use http_body_util::{BodyExt, Full, StreamBody};
+use hyper::body::Frame;
 use hyper::Request;
 use hyper_util::rt::TokioIo;
+use log::{debug, trace};
 use serde_json::{json, Value};
 use std::path::Path;
 use thiserror::Error;
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UnixStream};
+use tokio_util::io::ReaderStream;
+
+/// Read/write chunk size for session-file HTTP (~1 MiB).
+pub const FILE_STREAM_CHUNK: usize = 1024 * 1024;
+
+/// Versioned API prefix on the session listener (matches the service).
+pub const API_V0: &str = "/api/v0";
 
 /// Client errors.
 #[derive(Debug, Error)]
@@ -74,25 +85,67 @@ impl Client {
 
     /// Execute a GraphQL query/mutation and return the `data` value.
     pub async fn execute(&self, query: &str, variables: Option<Value>) -> Result<Value, ClientError> {
+        let vars = variables.clone().unwrap_or(Value::Null);
+        debug!(
+            target: "obake::client",
+            "graphql request endpoint={} query={} variables={}",
+            self.endpoint_label(),
+            compact_graphql(query),
+            vars
+        );
         let body = json!({
             "query": query,
-            "variables": variables.unwrap_or(Value::Null),
+            "variables": vars,
         });
         let bytes = serde_json::to_vec(&body).map_err(|e| ClientError::msg(e.to_string()))?;
+        trace!(
+            target: "obake::client",
+            "graphql request payload={}",
+            String::from_utf8_lossy(&bytes)
+        );
         let response_bytes = self.post_json(bytes).await?;
+        trace!(
+            target: "obake::client",
+            "graphql response payload={}",
+            String::from_utf8_lossy(&response_bytes)
+        );
         let value: Value =
             serde_json::from_slice(&response_bytes).map_err(|e| ClientError::msg(e.to_string()))?;
         if let Some(errors) = value.get("errors") {
             if errors.as_array().map(|a| !a.is_empty()).unwrap_or(false) {
+                debug!(
+                    target: "obake::client",
+                    "graphql response errors={}",
+                    errors
+                );
                 return Err(ClientError::GraphQl(errors.to_string()));
             }
         }
+        debug!(
+            target: "obake::client",
+            "graphql response ok bytes={}",
+            response_bytes.len()
+        );
         Ok(value.get("data").cloned().unwrap_or(Value::Null))
+    }
+
+    fn endpoint_label(&self) -> String {
+        match &self.endpoint {
+            Endpoint::Http { url, .. } => url.clone(),
+            Endpoint::Unix { path } => format!("unix://{path}"),
+        }
     }
 
     async fn post_json(&self, body: Vec<u8>) -> Result<Vec<u8>, ClientError> {
         match &self.endpoint {
             Endpoint::Http { url, token } => {
+                let gql = join_api_root(url);
+                debug!(
+                    target: "obake::client",
+                    "http POST {} content_length={}",
+                    gql,
+                    body.len()
+                );
                 let stream = connect_http(url).await?;
                 let io = TokioIo::new(stream);
                 let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
@@ -104,7 +157,7 @@ impl Client {
                 let authority = authority_of(url)?;
                 let mut builder = Request::builder()
                     .method("POST")
-                    .uri(url)
+                    .uri(&gql)
                     .header("host", authority)
                     .header("content-type", "application/json");
                 if let Some(t) = token {
@@ -117,8 +170,10 @@ impl Client {
                     .send_request(req)
                     .await
                     .map_err(|e| ClientError::msg(e.to_string()))?;
-                if !res.status().is_success() {
-                    return Err(ClientError::msg(format!("http {}", res.status())));
+                let status = res.status();
+                debug!(target: "obake::client", "http POST {} -> {}", gql, status);
+                if !status.is_success() {
+                    return Err(ClientError::msg(format!("http {status}")));
                 }
                 let collected = res
                     .into_body()
@@ -128,6 +183,13 @@ impl Client {
                 Ok(collected.to_bytes().to_vec())
             }
             Endpoint::Unix { path } => {
+                let label = format!("unix://{path}{API_V0}/");
+                debug!(
+                    target: "obake::client",
+                    "http POST {} content_length={}",
+                    label,
+                    body.len()
+                );
                 let stream = UnixStream::connect(Path::new(path))
                     .await
                     .map_err(|e| ClientError::msg(e.to_string()))?;
@@ -140,7 +202,7 @@ impl Client {
                 });
                 let req = Request::builder()
                     .method("POST")
-                    .uri("http://localhost/")
+                    .uri(format!("http://localhost{API_V0}/"))
                     .header("content-type", "application/json")
                     .body(Full::new(Bytes::from(body)))
                     .map_err(|e| ClientError::msg(e.to_string()))?;
@@ -148,6 +210,8 @@ impl Client {
                     .send_request(req)
                     .await
                     .map_err(|e| ClientError::msg(e.to_string()))?;
+                let status = res.status();
+                debug!(target: "obake::client", "http POST {} -> {}", label, status);
                 let collected = res
                     .into_body()
                     .collect()
@@ -239,13 +303,268 @@ impl Client {
         .await
     }
 
-    /// Fetch one session file.
-    pub async fn file(&self, id: &str, path: &str) -> Result<Value, ClientError> {
-        self.execute(
-            "query($id: ID!, $p: String!) { sessionFile(id: $id, path: $p) { path base64 } }",
-            Some(json!({ "id": id, "p": path })),
-        )
-        .await
+    /// HTTP GET a session work-area file, writing chunks to `writer`.
+    pub async fn get_file_to<W: AsyncWrite + Unpin>(
+        &self,
+        session_id: &str,
+        path: &str,
+        writer: &mut W,
+    ) -> Result<u64, ClientError> {
+        let uri = file_uri(session_id, path);
+        debug!(
+            target: "obake::client",
+            "http GET {}{}",
+            self.endpoint_label().trim_end_matches('/'),
+            uri
+        );
+        let n = self.http_stream_get(&uri, writer).await?;
+        debug!(
+            target: "obake::client",
+            "http GET {}{} -> ok bytes={}",
+            self.endpoint_label().trim_end_matches('/'),
+            uri,
+            n
+        );
+        Ok(n)
+    }
+
+    /// HTTP PUT a local file into a session work-area path (streamed).
+    pub async fn put_file_from_path(
+        &self,
+        session_id: &str,
+        remote_path: &str,
+        local_path: &Path,
+    ) -> Result<u64, ClientError> {
+        let meta = tokio::fs::metadata(local_path)
+            .await
+            .map_err(|e| ClientError::msg(e.to_string()))?;
+        let len = meta.len();
+        let file = tokio::fs::File::open(local_path)
+            .await
+            .map_err(|e| ClientError::msg(e.to_string()))?;
+        let uri = file_uri(session_id, remote_path);
+        debug!(
+            target: "obake::client",
+            "http PUT {}{} content_length={} local={}",
+            self.endpoint_label().trim_end_matches('/'),
+            uri,
+            len,
+            local_path.display()
+        );
+        self.http_stream_put(&uri, file, Some(len)).await?;
+        debug!(
+            target: "obake::client",
+            "http PUT {}{} -> ok bytes={}",
+            self.endpoint_label().trim_end_matches('/'),
+            uri,
+            len
+        );
+        Ok(len)
+    }
+
+    async fn http_stream_get<W: AsyncWrite + Unpin>(
+        &self,
+        path_and_query: &str,
+        writer: &mut W,
+    ) -> Result<u64, ClientError> {
+        let res = self
+            .send_file_request_len(
+                "GET",
+                path_and_query,
+                Full::new(Bytes::new()),
+                Some(0),
+            )
+            .await?;
+        let status = res.status();
+        if !status.is_success() {
+            let collected = res
+                .into_body()
+                .collect()
+                .await
+                .map_err(|e| ClientError::msg(e.to_string()))?;
+            let bytes = collected.to_bytes();
+            let msg = String::from_utf8_lossy(&bytes);
+            debug!(
+                target: "obake::client",
+                "http GET {} -> {} body={}",
+                path_and_query,
+                status,
+                truncate_chars(&msg, 200)
+            );
+            trace!(
+                target: "obake::client",
+                "http GET {} -> {} response payload={}",
+                path_and_query,
+                status,
+                msg
+            );
+            return Err(ClientError::msg(format!("http {status}: {msg}")));
+        }
+        let mut written = 0u64;
+        let mut body = res.into_body();
+        while let Some(frame) = body
+            .frame()
+            .await
+            .transpose()
+            .map_err(|e| ClientError::msg(e.to_string()))?
+        {
+            if let Ok(data) = frame.into_data() {
+                if log::log_enabled!(target: "obake::client", log::Level::Trace) {
+                    trace!(
+                        target: "obake::client",
+                        "http GET {} response chunk offset={} len={} payload={}",
+                        path_and_query,
+                        written,
+                        data.len(),
+                        escape_payload(&data)
+                    );
+                }
+                writer
+                    .write_all(&data)
+                    .await
+                    .map_err(|e| ClientError::msg(e.to_string()))?;
+                written += data.len() as u64;
+            }
+        }
+        writer
+            .flush()
+            .await
+            .map_err(|e| ClientError::msg(e.to_string()))?;
+        Ok(written)
+    }
+
+    async fn http_stream_put(
+        &self,
+        path_and_query: &str,
+        file: tokio::fs::File,
+        content_length: Option<u64>,
+    ) -> Result<(), ClientError> {
+        let reader = ReaderStream::with_capacity(file, FILE_STREAM_CHUNK);
+        let offset = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let label = path_and_query.to_string();
+        let stream = reader.map_ok(move |chunk| {
+            if log::log_enabled!(target: "obake::client", log::Level::Trace) {
+                let off = offset.fetch_add(
+                    chunk.len() as u64,
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+                trace!(
+                    target: "obake::client",
+                    "http PUT {} request chunk offset={} len={} payload={}",
+                    label,
+                    off,
+                    chunk.len(),
+                    escape_payload(&chunk)
+                );
+            }
+            Frame::data(chunk)
+        });
+        let body = StreamBody::new(stream);
+        let res = self
+            .send_file_request_len("PUT", path_and_query, body, content_length)
+            .await?;
+        let status = res.status();
+        if !status.is_success() {
+            let collected = res
+                .into_body()
+                .collect()
+                .await
+                .map_err(|e| ClientError::msg(e.to_string()))?;
+            let bytes = collected.to_bytes();
+            let msg = String::from_utf8_lossy(&bytes);
+            debug!(
+                target: "obake::client",
+                "http PUT {} -> {} body={}",
+                path_and_query,
+                status,
+                truncate_chars(&msg, 200)
+            );
+            trace!(
+                target: "obake::client",
+                "http PUT {} -> {} response payload={}",
+                path_and_query,
+                status,
+                msg
+            );
+            return Err(ClientError::msg(format!("http {status}: {msg}")));
+        }
+        Ok(())
+    }
+
+    async fn send_file_request_len<B>(
+        &self,
+        method: &str,
+        path_and_query: &str,
+        body: B,
+        content_length: Option<u64>,
+    ) -> Result<hyper::Response<hyper::body::Incoming>, ClientError>
+    where
+        B: http_body::Body + Send + 'static,
+        B::Data: Send + 'static,
+        B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    {
+        match &self.endpoint {
+            Endpoint::Http { url, token } => {
+                let stream = connect_http(url).await?;
+                let io = TokioIo::new(stream);
+                let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+                    .await
+                    .map_err(|e| ClientError::msg(e.to_string()))?;
+                tokio::spawn(async move {
+                    let _ = conn.await;
+                });
+                let authority = authority_of(url)?;
+                let full = format!("{}{path_and_query}", url.trim_end_matches('/'));
+                let mut builder = Request::builder()
+                    .method(method)
+                    .uri(&full)
+                    .header("host", authority);
+                if method == "PUT" {
+                    builder = builder.header("content-type", "application/octet-stream");
+                }
+                if let Some(n) = content_length {
+                    builder = builder.header("content-length", n.to_string());
+                }
+                if let Some(t) = token {
+                    builder = builder.header("authorization", format!("Bearer {t}"));
+                }
+                let req = builder
+                    .body(body)
+                    .map_err(|e| ClientError::msg(e.to_string()))?;
+                sender
+                    .send_request(req)
+                    .await
+                    .map_err(|e| ClientError::msg(e.to_string()))
+            }
+            Endpoint::Unix { path } => {
+                let stream = UnixStream::connect(Path::new(path))
+                    .await
+                    .map_err(|e| ClientError::msg(e.to_string()))?;
+                let io = TokioIo::new(stream);
+                let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+                    .await
+                    .map_err(|e| ClientError::msg(e.to_string()))?;
+                tokio::spawn(async move {
+                    let _ = conn.await;
+                });
+                let mut builder = Request::builder()
+                    .method(method)
+                    .uri(format!("http://localhost{path_and_query}"));
+                if method == "PUT" {
+                    builder = builder.header("content-type", "application/octet-stream");
+                }
+                if let Some(n) = content_length {
+                    builder = builder.header("content-length", n.to_string());
+                }
+                let req = builder
+                    .body(body)
+                    .map_err(|e| ClientError::msg(e.to_string()))?;
+                sender
+                    .send_request(req)
+                    .await
+                    .map_err(|e| ClientError::msg(e.to_string()))
+            }
+        }
     }
 
     /// Delete a session.
@@ -289,6 +608,69 @@ impl Client {
         )
         .await
     }
+}
+
+fn compact_graphql(query: &str) -> String {
+    let one_line: String = query.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_chars(&one_line, 240)
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let truncated: String = s.chars().take(max).collect();
+        format!("{truncated}…")
+    }
+}
+
+/// UTF-8 payload when valid; otherwise a hex dump (TRACE file bodies).
+fn escape_payload(data: &[u8]) -> String {
+    match std::str::from_utf8(data) {
+        Ok(s) => s.to_string(),
+        Err(_) => data
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
+fn join_api_root(base_url: &str) -> String {
+    let base = base_url.trim_end_matches('/');
+    if base.ends_with(API_V0) {
+        format!("{base}/")
+    } else {
+        format!("{base}{API_V0}/")
+    }
+}
+
+fn file_uri(session_id: &str, path: &str) -> String {
+    format!(
+        "{API_V0}/sessions/{}/files/{}",
+        encode_segment(session_id),
+        encode_rel_path(path)
+    )
+}
+
+fn encode_rel_path(path: &str) -> String {
+    path.split('/')
+        .map(encode_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn encode_segment(seg: &str) -> String {
+    let mut out = String::new();
+    for b in seg.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char);
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 async fn connect_http(url: &str) -> Result<TcpStream, ClientError> {

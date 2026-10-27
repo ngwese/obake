@@ -18,9 +18,9 @@ use crate::store::{
     read_session, write_current, write_session, RoleRefSerde, SessionMode, SessionRecord,
     SystemEndpoint, SystemLink,
 };
-use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use std::collections::HashMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
@@ -575,16 +575,91 @@ impl Service {
         Ok(out)
     }
 
-    /// Read one work-area file as base64.
-    pub fn session_file(&self, id: &str, path: &str) -> Result<(String, String), ServiceError> {
+    /// Resolve and open a work-area file for streaming read.
+    pub fn open_session_file(
+        &self,
+        id: &str,
+        path: &str,
+    ) -> Result<(File, u64), ServiceError> {
+        let full = self.session_file_path(id, path)?;
+        if full.is_dir() {
+            return Err(ServiceError::msg("path is a directory"));
+        }
+        let file = File::open(&full).map_err(|e| ServiceError::msg(e.to_string()))?;
+        let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+        Ok((file, len))
+    }
+
+    /// Read one work-area file as raw bytes (small files / tests).
+    pub fn read_session_file(&self, id: &str, path: &str) -> Result<Vec<u8>, ServiceError> {
+        let (mut file, _) = self.open_session_file(id, path)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)
+            .map_err(|e| ServiceError::msg(e.to_string()))?;
+        Ok(bytes)
+    }
+
+    /// Stream a reader into a work-area file (temp sibling, then rename).
+    pub fn write_session_file_from_reader(
+        &self,
+        id: &str,
+        path: &str,
+        reader: &mut dyn Read,
+    ) -> Result<(), ServiceError> {
+        let full = self.session_file_path_for_write(id, path)?;
+        store::atomic_write_from_reader(&full, reader)
+            .map_err(|e| ServiceError::msg(e.to_string()))
+    }
+
+    /// Write (create or replace) a regular file in a session work area.
+    pub fn write_session_file(
+        &self,
+        id: &str,
+        path: &str,
+        bytes: &[u8],
+    ) -> Result<(), ServiceError> {
+        self.write_session_file_from_reader(id, path, &mut io::Cursor::new(bytes))
+    }
+
+    fn session_file_path(&self, id: &str, path: &str) -> Result<PathBuf, ServiceError> {
         let root = self.paths.session_work(id);
         let rel = sanitize_rel_path(path)?;
         let full = root.join(&rel);
         if !full.starts_with(&root) {
             return Err(ServiceError::msg("path escapes session work area"));
         }
-        let bytes = fs::read(&full).map_err(|e| ServiceError::msg(e.to_string()))?;
-        Ok((rel, B64.encode(bytes)))
+        Ok(full)
+    }
+
+    /// Resolve a writable work-area path (creates parent dirs).
+    pub fn session_file_path_for_write(
+        &self,
+        id: &str,
+        path: &str,
+    ) -> Result<PathBuf, ServiceError> {
+        let root = self.paths.session_work(id);
+        if !root.exists() {
+            return Err(ServiceError::msg("session work area not found"));
+        }
+        let full = self.session_file_path(id, path)?;
+        if full.exists() && full.is_dir() {
+            return Err(ServiceError::msg("cannot overwrite a directory"));
+        }
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).map_err(|e| ServiceError::msg(e.to_string()))?;
+        }
+        Ok(full)
+    }
+
+    /// Resolve `current` to the active session id.
+    pub fn resolve_session_id(&self, id_or_current: &str) -> Result<String, ServiceError> {
+        if id_or_current == "current" {
+            self.session()
+                .map(|s| s.record.id)
+                .ok_or_else(|| ServiceError::msg("no active session"))
+        } else {
+            Ok(id_or_current.to_string())
+        }
     }
 
     /// Delete an inactive session.

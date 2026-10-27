@@ -239,12 +239,13 @@ async fn sessions_files_delete() {
 
     let files = service.session_files(&q1.record.id).unwrap();
     assert!(files.iter().any(|f| f.path == "take.wav"));
-    let (_path, b64) = service.session_file(&q1.record.id, "take.wav").unwrap();
-    assert_eq!(
-        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, b64).unwrap(),
-        b"WAVDATA"
-    );
-    assert!(service.session_file(&q1.record.id, "../lead.ck").is_err());
+    let bytes = service
+        .read_session_file(&q1.record.id, "take.wav")
+        .unwrap();
+    assert_eq!(bytes, b"WAVDATA");
+    assert!(service
+        .read_session_file(&q1.record.id, "../lead.ck")
+        .is_err());
 
     // Active session cannot be deleted
     let active = service
@@ -641,7 +642,7 @@ async fn tcp_auth_and_unix_no_auth() {
     });
     let req = hyper::Request::builder()
         .method("POST")
-        .uri("http://localhost/")
+        .uri("http://localhost/api/v0/")
         .header("content-type", "application/json")
         .body(Body::from(r#"{"query":"{ rigs { name } }"}"#))
         .unwrap();
@@ -691,7 +692,7 @@ async fn tcp_auth_and_unix_no_auth() {
             token: app_token,
         };
         let app = Router::new()
-            .route("/", get(|| async { "ok" }).post(handler))
+            .route("/api/v0/", get(|| async { "ok" }).post(handler))
             .layer(middleware::from_fn_with_state(st.clone(), auth))
             .with_state(st);
         axum::serve(listener, app).await.ok();
@@ -728,7 +729,7 @@ async fn reqwest_like_post(
     });
     let mut builder = hyper::Request::builder()
         .method("POST")
-        .uri("http://localhost/")
+        .uri("http://localhost/api/v0/")
         .header("content-type", "application/json");
     if let Some(t) = token {
         builder = builder.header("authorization", format!("Bearer {t}"));
@@ -774,4 +775,254 @@ async fn subscriptions_session_and_links() {
         l.state,
         obake_session::links::LinkState::Applied
     )));
+}
+
+#[tokio::test]
+async fn session_file_http_get_put_auth() {
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use hyper::client::conn::http1;
+    use hyper_util::rt::TokioIo;
+    use tokio::net::TcpListener;
+
+    let (_dir, service, _l, _g) = setup();
+    let started = service
+        .start_session("quartet", SessionMode::Fresh, None)
+        .unwrap();
+    let id = started.record.id.clone();
+    service
+        .write_session_file(&id, "notes.txt", b"hello")
+        .unwrap();
+
+    let token = service.token().to_string();
+    let app = obake_session::graphql::router_for_tests(service.clone(), true);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    async fn exchange(
+        addr: &std::net::SocketAddr,
+        method: &str,
+        uri: &str,
+        token: Option<&str>,
+        body: Option<Vec<u8>>,
+    ) -> (u16, Vec<u8>) {
+        let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let io = TokioIo::new(stream);
+        let (mut sender, conn) = http1::handshake(io).await.unwrap();
+        tokio::spawn(async move {
+            let _ = conn.await;
+        });
+        let mut builder = hyper::Request::builder()
+            .method(method)
+            .uri(format!("http://localhost{uri}"));
+        if let Some(t) = token {
+            builder = builder.header("authorization", format!("Bearer {t}"));
+        }
+        if body.is_some() {
+            builder = builder.header("content-type", "application/octet-stream");
+        }
+        let req = builder
+            .body(Body::from(body.unwrap_or_default()))
+            .unwrap();
+        let res = sender.send_request(req).await.unwrap();
+        let status = res.status().as_u16();
+        let bytes = res.into_body().collect().await.unwrap().to_bytes().to_vec();
+        (status, bytes)
+    }
+
+    // TCP without token rejected
+    let (status, _) = exchange(
+        &addr,
+        "GET",
+        &format!("/api/v0/sessions/{id}/files/notes.txt"),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, 401);
+
+    // GET raw bytes
+    let (status, body) = exchange(
+        &addr,
+        "GET",
+        &format!("/api/v0/sessions/{id}/files/notes.txt"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body, b"hello");
+
+    // PUT replaces
+    let (status, _) = exchange(
+        &addr,
+        "PUT",
+        &format!("/api/v0/sessions/{id}/files/notes.txt"),
+        Some(&token),
+        Some(b"world".to_vec()),
+    )
+    .await;
+    assert_eq!(status, 204);
+    assert_eq!(
+        service.read_session_file(&id, "notes.txt").unwrap(),
+        b"world"
+    );
+
+    // path escape fails
+    let (status, _) = exchange(
+        &addr,
+        "GET",
+        &format!("/api/v0/sessions/{id}/files/../lead.ck"),
+        Some(&token),
+        None,
+    )
+    .await;
+    assert!(status == 400 || status == 404, "status={status}");
+
+    // current alias
+    let (status, body) = exchange(
+        &addr,
+        "GET",
+        "/api/v0/sessions/current/files/notes.txt",
+        Some(&token),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200);
+    assert_eq!(body, b"world");
+
+    // Unix without token succeeds
+    let sock = service.paths().api_socket();
+    let svc_u = service.clone();
+    let sock_path = sock.clone();
+    tokio::spawn(async move {
+        let _ = obake_session::graphql::serve_unix(svc_u, &sock_path).await;
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = http1::handshake(io).await.unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let req = hyper::Request::builder()
+        .method("GET")
+        .uri(format!("http://localhost/api/v0/sessions/{id}/files/notes.txt"))
+        .body(Body::empty())
+        .unwrap();
+    let res = sender.send_request(req).await.unwrap();
+    assert_eq!(res.status(), 200);
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], b"world");
+}
+
+#[test]
+fn session_file_stream_write_rejects_escape_and_dir() {
+    let (_dir, service, _l, _g) = setup();
+    let started = service
+        .start_session("quartet", SessionMode::Fresh, None)
+        .unwrap();
+    let id = started.record.id.clone();
+
+    let mut data = b"payload".as_slice();
+    service
+        .write_session_file_from_reader(&id, "nested/a.bin", &mut data)
+        .unwrap();
+    assert_eq!(
+        service.read_session_file(&id, "nested/a.bin").unwrap(),
+        b"payload"
+    );
+
+    let mut bad = b"x".as_slice();
+    assert!(service
+        .write_session_file_from_reader(&id, "../escape.bin", &mut bad)
+        .is_err());
+
+    let work = service.paths().session_work(&id);
+    fs::create_dir_all(work.join("adir")).unwrap();
+    let mut again = b"x".as_slice();
+    assert!(service
+        .write_session_file_from_reader(&id, "adir", &mut again)
+        .is_err());
+
+    // Failed write leaves prior content
+    service
+        .write_session_file(&id, "keep.bin", b"original")
+        .unwrap();
+    // open_session_file works
+    let (mut f, len) = service.open_session_file(&id, "keep.bin").unwrap();
+    assert_eq!(len, 8);
+    let mut buf = Vec::new();
+    std::io::Read::read_to_end(&mut f, &mut buf).unwrap();
+    assert_eq!(buf, b"original");
+}
+
+#[tokio::test]
+async fn session_file_http_streams_large_payload() {
+    use axum::body::Body;
+    use http_body_util::BodyExt;
+    use hyper::client::conn::http1;
+    use hyper_util::rt::TokioIo;
+    use tokio::net::TcpListener;
+
+    let (_dir, service, _l, _g) = setup();
+    let started = service
+        .start_session("quartet", SessionMode::Fresh, None)
+        .unwrap();
+    let id = started.record.id.clone();
+    // Seed a prior file that must survive a failed/partial replace path
+    service
+        .write_session_file(&id, "big.bin", b"prior")
+        .unwrap();
+
+    let token = service.token().to_string();
+    let app = obake_session::graphql::router_for_tests(service.clone(), false);
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.ok();
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    // >8 MiB — above Axum's default 2 MiB body limit
+    let size = 9 * 1024 * 1024;
+    let payload: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = http1::handshake(io).await.unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let req = hyper::Request::builder()
+        .method("PUT")
+        .uri(format!("http://localhost/api/v0/sessions/{id}/files/big.bin"))
+        .header("content-type", "application/octet-stream")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(payload.clone()))
+        .unwrap();
+    let res = sender.send_request(req).await.unwrap();
+    assert_eq!(res.status(), 204, "large PUT must not 413");
+
+    let stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = http1::handshake(io).await.unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let req = hyper::Request::builder()
+        .method("GET")
+        .uri(format!("http://localhost/api/v0/sessions/{id}/files/big.bin"))
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let res = sender.send_request(req).await.unwrap();
+    assert_eq!(res.status(), 200);
+    let got = res.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(got.len(), size);
+    assert_eq!(&got[..], &payload[..]);
 }

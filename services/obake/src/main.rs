@@ -1,18 +1,24 @@
 // SPDX-FileCopyrightText: Copyright 2026 Greg Wuller
 // SPDX-License-Identifier: MIT
 
-//! `obake` CLI — GraphQL client for obake-session.
+//! `obake` CLI — GraphQL / HTTP client for obake-session.
 
 use clap::{Parser, Subcommand};
 use env_logger::Env;
 use obake::format;
+use obake::xfer::{
+    expand_local_sources, is_dir_dest, is_remote_dir_dest, local_target_for_get,
+    match_remote_sources, remote_target_for_put, split_src_dest,
+};
 use obake::{default_config_path, load_config, resolve_endpoint, Client, Kind};
 use serde_json::Value;
+use std::io;
 use std::path::PathBuf;
+use tokio::io::AsyncWriteExt;
 use std::process::ExitCode;
 
 #[derive(Parser, Debug)]
-#[command(name = "obake", about = "Client for the obake-session GraphQL API")]
+#[command(name = "obake", about = "Client for the obake-session API")]
 struct Cli {
     /// Client config path.
     #[arg(long)]
@@ -35,48 +41,36 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    /// List rigs.
-    Rigs,
-    /// Show one rig, or install/remove.
+    /// Rig documents.
     Rig {
         #[command(subcommand)]
-        action: Option<RigAction>,
-        /// Rig name when querying.
-        name: Option<String>,
+        action: RigCmd,
     },
-    /// List shapes.
-    Shapes,
-    /// List recorded sessions.
-    Sessions {
-        #[arg(long)]
-        rig: Option<String>,
+    /// Shape profiles.
+    Shape {
+        #[command(subcommand)]
+        action: ShapeCmd,
     },
-    /// Show the active session.
-    Session,
-    /// Start a session.
-    Start {
-        rig: String,
-        #[arg(long, default_value = "FRESH")]
-        mode: String,
-        #[arg(long)]
-        fork_from: Option<String>,
+    /// Sessions.
+    Session {
+        #[command(subcommand)]
+        action: SessionCmd,
     },
-    /// Stop the active session.
-    Stop,
-    /// Replace system links (JSON array on stdin or --links).
-    Links {
-        #[arg(long)]
-        links: Option<String>,
+    /// System links.
+    Link {
+        #[command(subcommand)]
+        action: LinkCmd,
     },
-    /// List session work-area files.
-    Files { id: String },
-    /// Fetch one session file (prints JSON with base64).
-    File { id: String, path: String },
-    /// Delete a recorded session.
-    #[command(name = "delete-session")]
-    DeleteSession { id: String },
+    /// Session work-area files.
+    File {
+        #[command(subcommand)]
+        action: FileCmd,
+    },
     /// Live PipeWire graph.
-    Graph,
+    Graph {
+        #[command(subcommand)]
+        action: GraphCmd,
+    },
     /// Ravenna stream replacement.
     Ravenna {
         #[command(subcommand)]
@@ -90,15 +84,90 @@ enum Commands {
 }
 
 #[derive(Subcommand, Debug)]
-enum RigAction {
+enum RigCmd {
+    /// List installed rigs.
+    Ls,
+    /// Show one rig.
+    Describe { name: String },
     /// Install a rig document from a file.
-    Install {
+    Create {
         name: String,
         #[arg(long)]
         file: PathBuf,
     },
     /// Remove a rig by name.
-    Remove { name: String },
+    Delete { name: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum ShapeCmd {
+    /// List shapes.
+    Ls,
+}
+
+#[derive(Subcommand, Debug)]
+enum SessionCmd {
+    /// List recorded sessions.
+    Ls {
+        #[arg(long)]
+        rig: Option<String>,
+    },
+    /// Describe the active session, or one recorded session by id.
+    Describe { id: Option<String> },
+    /// Start a session.
+    Start {
+        rig: String,
+        #[arg(long, default_value = "FRESH")]
+        mode: String,
+        #[arg(long)]
+        fork_from: Option<String>,
+    },
+    /// Stop the active session.
+    Stop,
+    /// Delete an inactive recorded session.
+    Delete { id: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum LinkCmd {
+    /// Replace system links (JSON array on stdin or --links).
+    Set {
+        #[arg(long)]
+        links: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum FileCmd {
+    /// List work-area files.
+    Ls {
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Download work-area files (globs / directories; last arg is destination).
+    Get {
+        /// Remote paths, globs, or directories, then local destination
+        /// (`.`, `-`, file, or directory).
+        #[arg(required = true, num_args = 2..)]
+        args: Vec<String>,
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Upload local files (globs / directories; last arg is destination).
+    Put {
+        /// Local paths or globs, then remote destination (`.`, file, or
+        /// directory).
+        #[arg(required = true, num_args = 2..)]
+        args: Vec<String>,
+        #[arg(long)]
+        session: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum GraphCmd {
+    /// List live PipeWire nodes.
+    Ls,
 }
 
 #[derive(Subcommand, Debug)]
@@ -133,53 +202,159 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client = Client::from_resolved(&resolved);
     let as_json = cli.json;
 
+    match cli.command {
+        Commands::File {
+            action: FileCmd::Get { args, session },
+        } => {
+            let (sources, dest) = split_src_dest(&args)?;
+            let id = resolve_session_id(&client, session.as_deref()).await?;
+            let entries = session_file_entries(&client, &id).await?;
+            let remotes = match_remote_sources(&entries, &sources)?;
+            if remotes.is_empty() {
+                return Err("no remote files matched".into());
+            }
+            if dest == "-" && remotes.len() != 1 {
+                return Err("stdout (-) requires exactly one remote file".into());
+            }
+            let multi = remotes.len() > 1 || is_dir_dest(&dest);
+            let mut results = Vec::new();
+            for remote in &remotes {
+                let local_target = local_target_for_get(remote, &dest, multi)?;
+                let written = stream_get_to(&client, &id, remote, &local_target).await?;
+                if !as_json && dest != "-" {
+                    println!("wrote {written} bytes to {local_target}");
+                }
+                results.push(serde_json::json!({
+                    "bytes": written,
+                    "path": remote,
+                    "dest": local_target,
+                }));
+            }
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&results)?);
+            }
+            return Ok(());
+        }
+        Commands::File {
+            action: FileCmd::Put { args, session },
+        } => {
+            let (sources, dest) = split_src_dest(&args)?;
+            let id = resolve_session_id(&client, session.as_deref()).await?;
+            let locals = expand_local_sources(&sources)?;
+            if locals.is_empty() {
+                return Err("no local files matched".into());
+            }
+            let entries = session_file_entries(&client, &id).await?;
+            let multi =
+                locals.len() > 1 || is_dir_dest(&dest) || is_remote_dir_dest(&dest, &entries);
+            let mut results = Vec::new();
+            for local in &locals {
+                let remote = remote_target_for_put(local, &dest, multi);
+                let written = client
+                    .put_file_from_path(&id, &remote, &local.path)
+                    .await?;
+                if !as_json {
+                    println!("wrote {written} bytes to {remote}");
+                }
+                results.push(serde_json::json!({
+                    "bytes": written,
+                    "path": remote,
+                    "local": local.path.display().to_string(),
+                }));
+            }
+            if as_json {
+                println!("{}", serde_json::to_string_pretty(&results)?);
+            }
+            return Ok(());
+        }
+        _ => {}
+    }
+
     let (kind, data) = match cli.command {
-        Commands::Rigs => (Kind::Rigs, client.rigs().await?),
-        Commands::Rig { action, name } => match action {
-            Some(RigAction::Install { name, file }) => {
+        Commands::Rig { action } => match action {
+            RigCmd::Ls => (Kind::Rigs, client.rigs().await?),
+            RigCmd::Describe { name } => (Kind::Rig, client.rig(&name).await?),
+            RigCmd::Create { name, file } => {
                 let doc = std::fs::read_to_string(file)?;
                 (Kind::InstallRig, client.install_rig(&name, &doc).await?)
             }
-            Some(RigAction::Remove { name }) => {
-                (Kind::RemoveRig, client.remove_rig(&name).await?)
+            RigCmd::Delete { name } => (Kind::RemoveRig, client.remove_rig(&name).await?),
+        },
+        Commands::Shape { action } => match action {
+            ShapeCmd::Ls => (Kind::Shapes, client.shapes().await?),
+        },
+        Commands::Session { action } => match action {
+            SessionCmd::Ls { rig } => (Kind::Sessions, client.sessions(rig.as_deref()).await?),
+            SessionCmd::Describe { id: None } => {
+                let data = client.session().await?;
+                if data.get("session").map(|s| s.is_null()).unwrap_or(true) {
+                    return Err("no active session".into());
+                }
+                (Kind::Session, data)
             }
-            None => {
-                let name = name.ok_or("rig name required")?;
-                (Kind::Rig, client.rig(&name).await?)
+            SessionCmd::Describe { id: Some(id) } => {
+                let active = client.session().await?;
+                let active_id = active
+                    .get("session")
+                    .and_then(|s| s.get("id"))
+                    .and_then(|v| v.as_str());
+                if active_id == Some(id.as_str()) {
+                    (Kind::Session, active)
+                } else {
+                    let listed = client.sessions(None).await?;
+                    let found = listed
+                        .get("sessions")
+                        .and_then(|a| a.as_array())
+                        .and_then(|arr| {
+                            arr.iter()
+                                .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
+                                .cloned()
+                        })
+                        .ok_or_else(|| format!("session not found: {id}"))?;
+                    (Kind::Session, serde_json::json!({ "session": found }))
+                }
+            }
+            SessionCmd::Start {
+                rig,
+                mode,
+                fork_from,
+            } => (
+                Kind::Start,
+                client.start(&rig, &mode, fork_from.as_deref()).await?,
+            ),
+            SessionCmd::Stop => (Kind::Stop, client.stop().await?),
+            SessionCmd::Delete { id } => (Kind::DeleteSession, client.delete_session(&id).await?),
+        },
+        Commands::Link { action } => match action {
+            LinkCmd::Set { links } => {
+                let text = match links {
+                    Some(s) => s,
+                    None => {
+                        let mut buf = String::new();
+                        std::io::Read::read_to_string(&mut io::stdin(), &mut buf)?;
+                        buf
+                    }
+                };
+                let value: Value = serde_json::from_str(&text)?;
+                (Kind::Links, client.set_links(value).await?)
             }
         },
-        Commands::Shapes => (Kind::Shapes, client.shapes().await?),
-        Commands::Sessions { rig } => (Kind::Sessions, client.sessions(rig.as_deref()).await?),
-        Commands::Session => (Kind::Session, client.session().await?),
-        Commands::Start {
-            rig,
-            mode,
-            fork_from,
-        } => (
-            Kind::Start,
-            client.start(&rig, &mode, fork_from.as_deref()).await?,
-        ),
-        Commands::Stop => (Kind::Stop, client.stop().await?),
-        Commands::Links { links } => {
-            let text = match links {
-                Some(s) => s,
-                None => {
-                    let mut buf = String::new();
-                    std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
-                    buf
-                }
-            };
-            let value: Value = serde_json::from_str(&text)?;
-            (Kind::Links, client.set_links(value).await?)
+        Commands::File {
+            action: FileCmd::Ls { session },
+        } => {
+            let id = resolve_session_id(&client, session.as_deref()).await?;
+            (Kind::Files, client.files(&id).await?)
         }
-        Commands::Files { id } => (Kind::Files, client.files(&id).await?),
-        Commands::File { id, path } => (Kind::File, client.file(&id, &path).await?),
-        Commands::DeleteSession { id } => (Kind::DeleteSession, client.delete_session(&id).await?),
-        Commands::Graph => (Kind::Graph, client.graph().await?),
+        Commands::File {
+            action: FileCmd::Get { .. } | FileCmd::Put { .. },
+        } => unreachable!(),
+        Commands::Graph { action } => match action {
+            GraphCmd::Ls => (Kind::Graph, client.graph().await?),
+        },
         Commands::Ravenna { cmd } => match cmd {
             RavennaCommands::Set => {
                 let mut buf = String::new();
-                std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+                std::io::Read::read_to_string(&mut io::stdin(), &mut buf)?;
                 let value: Value = serde_json::from_str(&buf)?;
                 let sources = value
                     .get("sources")
@@ -200,4 +375,65 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         print!("{}", format::render(kind, &data));
     }
     Ok(())
+}
+
+async fn resolve_session_id(
+    client: &Client,
+    session: Option<&str>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(id) = session {
+        return Ok(id.to_string());
+    }
+    let data = client.session().await?;
+    data.get("session")
+        .and_then(|s| s.get("id"))
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .ok_or_else(|| "no active session".into())
+}
+
+async fn session_file_entries(
+    client: &Client,
+    session_id: &str,
+) -> Result<Vec<(String, bool)>, Box<dyn std::error::Error + Send + Sync>> {
+    let listing = client.files(session_id).await?;
+    let files = listing
+        .get("sessionFiles")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(files
+        .iter()
+        .filter_map(|f| {
+            let path = f.get("path")?.as_str()?.to_string();
+            let dir = f.get("directory")?.as_bool().unwrap_or(false);
+            Some((path, dir))
+        })
+        .collect())
+}
+
+async fn stream_get_to(
+    client: &Client,
+    session_id: &str,
+    remote_path: &str,
+    dest: &str,
+) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+    if dest == "-" {
+        let mut stdout = tokio::io::stdout();
+        return Ok(client
+            .get_file_to(session_id, remote_path, &mut stdout)
+            .await?);
+    }
+    let target = PathBuf::from(dest);
+    if let Some(parent) = target.parent() {
+        if !parent.as_os_str().is_empty() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+    }
+    let mut file = tokio::fs::File::create(&target).await?;
+    let n = client
+        .get_file_to(session_id, remote_path, &mut file)
+        .await?;
+    file.flush().await?;
+    Ok(n)
 }

@@ -6,6 +6,7 @@
 mod client;
 mod config;
 pub mod format;
+pub mod xfer;
 
 pub use client::{Client, ClientError, Endpoint};
 pub use config::{

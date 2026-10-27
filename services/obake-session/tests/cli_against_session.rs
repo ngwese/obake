@@ -64,7 +64,7 @@ links: []
     });
     let req = hyper::Request::builder()
         .method("POST")
-        .uri("http://localhost/")
+        .uri("http://localhost/api/v0/")
         .header("content-type", "application/json")
         .body(Body::from(serde_json::to_vec(&body).unwrap()))
         .unwrap();

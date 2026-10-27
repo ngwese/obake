@@ -190,12 +190,16 @@ PIPEWIRE_PROPS={
   client.name=<node>,
   application.name=<node>,
   node.description=<node>,
-  node.autoconnect=false
+  node.autoconnect=false,
+  jack.self-connect-mode=ignore-external
 }
 ```
 
 `node.autoconnect=false` keeps WirePlumber from attaching the instance to
-a default device. The session service is the only linker.
+a default device. `jack.self-connect-mode=ignore-external` ignores
+`jack_connect` from the shape itself (ChucK/RtAudio auto-wires to
+physical ports otherwise). The session service is the only linker;
+external `pw-link` from other clients still works.
 
 Shape profiles live in the `obake-session` crate, not in the rig:
 

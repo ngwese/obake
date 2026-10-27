@@ -60,9 +60,15 @@ pub trait Launcher: Send + Sync {
 }
 
 /// Build `PIPEWIRE_PROPS` JSON for a node name.
+///
+/// `node.autoconnect=false` stops WirePlumber from linking the node to the
+/// default sink/source. `jack.self-connect-mode=ignore-external` stops the
+/// JACK client itself (e.g. ChucK/RtAudio) from `jack_connect`-ing to
+/// physical ports; the session reconciler is the only linker. External
+/// `pw-link` from other clients still works.
 pub fn pipewire_props(node: &str) -> String {
     format!(
-        "{{\"node.name\"=\"{node}\",\"client.name\"=\"{node}\",\"application.name\"=\"{node}\",\"node.description\"=\"{node}\",\"node.autoconnect\"=false}}"
+        "{{\"node.name\"=\"{node}\",\"client.name\"=\"{node}\",\"application.name\"=\"{node}\",\"node.description\"=\"{node}\",\"node.autoconnect\"=false,\"jack.self-connect-mode\"=\"ignore-external\"}}"
     )
 }
 

@@ -115,16 +115,12 @@ async fn fresh_start_persists_and_restores() {
     let started = launcher.started();
     assert_eq!(started.len(), 1);
     assert_eq!(started[0].instance_name, "lead");
-    assert!(started[0]
-        .env
-        .get("PIPEWIRE_PROPS")
-        .unwrap()
-        .contains("node.name\"=\"lead\"")
-        || started[0]
-            .env
-            .get("PIPEWIRE_PROPS")
-            .unwrap()
-            .contains("lead"));
+    let props = started[0].env.get("PIPEWIRE_PROPS").unwrap();
+    assert!(
+        props.contains("node.name\"=\"lead\"") || props.contains("lead")
+    );
+    assert!(props.contains("node.autoconnect\"=false"));
+    assert!(props.contains("jack.self-connect-mode\"=\"ignore-external\""));
     assert!(started[0]
         .binds
         .iter()

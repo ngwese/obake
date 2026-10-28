@@ -182,6 +182,8 @@ struct Session {
     system_links: Vec<SystemLinkGql>,
     #[graphql(name = "linkStatus")]
     link_status: Vec<LinkStatusGql>,
+    /// Instances from the session's rig (name + shape at minimum).
+    instances: Vec<Instance>,
 }
 
 #[derive(SimpleObject)]
@@ -293,7 +295,34 @@ fn map_rig(a: crate::config::Rig) -> Rig {
     }
 }
 
-fn map_session(s: ActiveSession) -> Session {
+fn map_session(service: &Service, s: ActiveSession) -> Session {
+    let instances = service
+        .rig(&s.record.rig)
+        .ok()
+        .flatten()
+        .map(|r| {
+            let mut instances: Vec<_> = r.instances.into_values().collect();
+            instances.sort_by(|x, y| x.name.cmp(&y.name));
+            instances
+                .into_iter()
+                .map(|i| Instance {
+                    name: i.name,
+                    shape: i.shape,
+                    node_name: i.node_name,
+                    command: i.command,
+                    roles: i
+                        .roles
+                        .into_iter()
+                        .map(|r| Role {
+                            name: r.name,
+                            direction: r.direction.into(),
+                            index: r.index as i32,
+                        })
+                        .collect(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Session {
         id: ID(s.record.id.clone()),
         rig: s.record.rig.clone(),
@@ -325,6 +354,7 @@ fn map_session(s: ActiveSession) -> Session {
                 state: l.state.into(),
             })
             .collect(),
+        instances,
     }
 }
 
@@ -366,7 +396,8 @@ impl QueryRoot {
     }
 
     async fn session(&self, ctx: &Context<'_>) -> Result<Option<Session>> {
-        Ok(svc(ctx)?.session().map(map_session))
+        let service = svc(ctx)?;
+        Ok(service.session().map(|s| map_session(service, s)))
     }
 
     async fn sessions(
@@ -423,10 +454,11 @@ impl MutationRoot {
     ) -> Result<Session> {
         let mode: ModeEnum = input.mode.into();
         let fork = input.fork_from.as_ref().map(|id| id.as_str());
-        let s = svc(ctx)?
+        let service = svc(ctx)?;
+        let s = service
             .start_session(&input.rig, mode, fork)
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(map_session(s))
+        Ok(map_session(service, s))
     }
 
     async fn stop_session(&self, ctx: &Context<'_>) -> Result<bool> {
@@ -454,10 +486,11 @@ impl MutationRoot {
                 },
             })
             .collect();
-        let s = svc(ctx)?
+        let service = svc(ctx)?;
+        let s = service
             .set_system_links(converted)
             .map_err(|e| async_graphql::Error::new(e.to_string()))?;
-        Ok(map_session(s))
+        Ok(map_session(service, s))
     }
 
     async fn delete_session(&self, ctx: &Context<'_>, id: ID) -> Result<bool> {
@@ -539,10 +572,10 @@ impl SubscriptionRoot {
         let service = svc(ctx)?.clone();
         let mut rx = service.subscribe_session();
         Ok(async_stream::stream! {
-            yield service.session().map(map_session);
+            yield service.session().map(|s| map_session(&service, s));
             loop {
                 match rx.recv().await {
-                    Ok(s) => yield s.map(map_session),
+                    Ok(s) => yield s.map(|s| map_session(&service, s)),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(_) => break,
                 }

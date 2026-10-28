@@ -77,11 +77,12 @@ Noun-verb form. List with `<noun> ls` (not a plural noun alone).
 | `obake rig delete <name>` | GraphQL `removeRig` |
 | `obake shape ls` | GraphQL `shapes` |
 | `obake session ls [--rig NAME]` | GraphQL `sessions(rig:)` |
-| `obake session describe` | GraphQL `session` (active; fails when idle) |
+| `obake session describe` | GraphQL `session` (active; lists instances; fails when idle) |
 | `obake session describe <id>` | recorded session |
 | `obake session start <rig> [--mode FRESH\|FORK] [--fork-from ID]` | GraphQL `startSession` |
 | `obake session stop` | GraphQL `stopSession` |
 | `obake session delete <id>` | GraphQL `deleteSession` |
+| `obake session log [-f\|--follow] [INSTANCE…]` | HTTP GET `/api/v0/sessions/current/logs` |
 | `obake link set [--links JSON]` | GraphQL `setSystemLinks` |
 | `obake file ls [--session ID]` | GraphQL `sessionFiles` |
 | `obake file get <src…> <dest> [--session ID]` | HTTP GET `/api/v0/sessions/…/files/…` |

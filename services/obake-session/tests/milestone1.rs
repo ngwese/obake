@@ -364,12 +364,18 @@ async fn graphql_set_system_links_and_queries() {
     )
     .await;
     assert!(resp.errors.is_empty(), "{:?}", resp.errors);
-    let session = graphql::execute(service.clone(), "{ session { systemLinks { to { node port } } } }").await;
+    let session = graphql::execute(
+        service.clone(),
+        "{ session { instances { name shape } systemLinks { to { node port } } } }",
+    )
+    .await;
     let data = session.data.into_json().unwrap();
     assert_eq!(
         data["session"]["systemLinks"][0]["to"]["node"],
         "obake-out-1"
     );
+    assert_eq!(data["session"]["instances"][0]["name"], "lead");
+    assert_eq!(data["session"]["instances"][0]["shape"], "chuck");
 
     let rigs = graphql::execute(service.clone(), "{ rigs { name instances { name roles { name index } } } }").await;
     assert!(rigs.errors.is_empty());

@@ -217,6 +217,15 @@ fn format_session(v: &Value) -> String {
     let _ = writeln!(out, "rig:    {}", str_field(v, "rig"));
     let _ = writeln!(out, "mode:   {}", str_field(v, "mode"));
     let _ = writeln!(out, "phase:  {}", str_field(v, "phase"));
+    if let Some(instances) = v.get("instances").and_then(|i| i.as_array()) {
+        out.push('\n');
+        let rows: Vec<Vec<String>> = instances
+            .iter()
+            .map(|i| vec![str_field(i, "name"), str_field(i, "shape")])
+            .collect();
+        out.push_str("instances:\n");
+        out.push_str(&table(&["NAME", "SHAPE"], &rows));
+    }
     if let Some(links) = v.get("systemLinks").and_then(|l| l.as_array()) {
         out.push('\n');
         let rows: Vec<Vec<String>> = links
@@ -426,5 +435,26 @@ mod tests {
             render(Kind::Session, &json!({ "session": null })),
             "no active session\n"
         );
+    }
+
+    #[test]
+    fn session_lists_instances() {
+        let data = json!({
+            "session": {
+                "id": "abc",
+                "rig": "tone",
+                "mode": "FRESH",
+                "phase": "LINKED",
+                "instances": [
+                    { "name": "tone", "shape": "chuck-alpine" }
+                ],
+                "systemLinks": [],
+                "linkStatus": []
+            }
+        });
+        let text = render(Kind::Session, &data);
+        assert!(text.contains("instances:"));
+        assert!(text.contains("tone"));
+        assert!(text.contains("chuck-alpine"));
     }
 }

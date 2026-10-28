@@ -256,10 +256,35 @@ impl Client {
     /// Active session.
     pub async fn session(&self) -> Result<Value, ClientError> {
         self.execute(
-            "{ session { id rig mode phase systemLinks { from { instance role } to { node alias port } } linkStatus { from to state } } }",
+            "{ session { id rig mode phase instances { name shape } systemLinks { from { instance role } to { node alias port } } linkStatus { from to state } } }",
             None,
         )
         .await
+    }
+
+    /// Stream active session instance logs to a writer.
+    pub async fn session_logs(
+        &self,
+        instances: &[String],
+        follow: bool,
+        writer: &mut (impl AsyncWrite + Unpin),
+    ) -> Result<u64, ClientError> {
+        let uri = logs_uri(instances, follow);
+        debug!(
+            target: "obake::client",
+            "http GET {}{}",
+            self.endpoint_label().trim_end_matches('/'),
+            uri
+        );
+        let n = self.http_stream_get(&uri, writer).await?;
+        debug!(
+            target: "obake::client",
+            "http GET {}{} -> ok bytes={}",
+            self.endpoint_label().trim_end_matches('/'),
+            uri,
+            n
+        );
+        Ok(n)
     }
 
     /// Recorded sessions.
@@ -726,6 +751,25 @@ fn file_uri(session_id: &str, path: &str) -> String {
         encode_segment(session_id),
         encode_rel_path(path)
     )
+}
+
+fn logs_uri(instances: &[String], follow: bool) -> String {
+    let mut uri = format!("{API_V0}/sessions/current/logs");
+    let mut first = true;
+    let mut push = |key: &str, value: &str| {
+        uri.push(if first { '?' } else { '&' });
+        first = false;
+        uri.push_str(key);
+        uri.push('=');
+        uri.push_str(&encode_segment(value));
+    };
+    if follow {
+        push("follow", "1");
+    }
+    for name in instances {
+        push("instance", name);
+    }
+    uri
 }
 
 fn encode_rel_path(path: &str) -> String {

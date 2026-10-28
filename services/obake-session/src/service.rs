@@ -11,6 +11,9 @@ use crate::launch::{
     pipewire_props, singularity_name, BindMount, LaunchRequest, Launcher,
 };
 use crate::links::{GraphOps, LinkState, LinkStatus, Reconciler};
+use crate::logs::{
+    InstanceLogTarget, LogFiles, MapLogPaths, SharedLogPaths, SingularityLogPaths,
+};
 use crate::paths::Paths;
 use crate::shapes::{self, is_launchable, ShapeInfo};
 use crate::auth::LoginBook;
@@ -87,6 +90,9 @@ pub struct Service {
     image_dir: PathBuf,
     launcher: Arc<dyn Launcher>,
     graph: Arc<dyn GraphOps>,
+    log_paths: SharedLogPaths,
+    /// Optional map for tests that need to register log files after start.
+    map_log_paths: Option<Arc<MapLogPaths>>,
     inner: Mutex<Inner>,
     token: RwLock<String>,
     fingerprint: RwLock<String>,
@@ -108,6 +114,17 @@ impl Service {
         paths: Paths,
         launcher: Arc<dyn Launcher>,
         graph: Arc<dyn GraphOps>,
+    ) -> Result<Arc<Self>, ServiceError> {
+        Self::new_with_logs(paths, launcher, graph, Arc::new(SingularityLogPaths::new()), None)
+    }
+
+    /// Build a service with an injected log-path resolver (tests).
+    pub fn new_with_logs(
+        paths: Paths,
+        launcher: Arc<dyn Launcher>,
+        graph: Arc<dyn GraphOps>,
+        log_paths: SharedLogPaths,
+        map_log_paths: Option<Arc<MapLogPaths>>,
     ) -> Result<Arc<Self>, ServiceError> {
         paths
             .ensure()
@@ -135,6 +152,8 @@ impl Service {
             image_dir,
             launcher,
             graph,
+            log_paths,
+            map_log_paths,
             inner: Mutex::new(Inner {
                 active: None,
                 reconciler: Reconciler::new(),
@@ -148,6 +167,24 @@ impl Service {
             ravenna_available,
         });
         Ok(svc)
+    }
+
+    /// Test helper: register Singularity log files for an instance name.
+    pub fn register_log_files_for_test(
+        &self,
+        singularity_name: &str,
+        out: PathBuf,
+        err: PathBuf,
+    ) -> Result<(), ServiceError> {
+        let map = self
+            .map_log_paths
+            .as_ref()
+            .ok_or_else(|| ServiceError::msg("log map not configured"))?;
+        map.insert(
+            singularity_name,
+            LogFiles { out, err },
+        );
+        Ok(())
     }
 
     /// Paths in use.
@@ -647,6 +684,47 @@ impl Service {
         list_files_rec(&root, &root, &mut out)?;
         out.sort_by(|a, b| a.path.cmp(&b.path));
         Ok(out)
+    }
+
+    /// Resolve Singularity log files for the active session.
+    ///
+    /// Empty `filter` selects every instance of the active rig. Unknown
+    /// names fail. Requires an active session.
+    pub fn session_log_targets(
+        &self,
+        filter: &[String],
+    ) -> Result<Vec<InstanceLogTarget>, ServiceError> {
+        let active = self
+            .session()
+            .ok_or_else(|| ServiceError::msg("no active session"))?;
+        let rig = self
+            .rig(&active.record.rig)?
+            .ok_or_else(|| ServiceError::msg(format!("unknown rig `{}`", active.record.rig)))?;
+
+        let mut names: Vec<String> = if filter.is_empty() {
+            rig.instances.keys().cloned().collect()
+        } else {
+            for name in filter {
+                if !rig.instances.contains_key(name) {
+                    return Err(ServiceError::msg(format!(
+                        "unknown instance `{name}`"
+                    )));
+                }
+            }
+            filter.to_vec()
+        };
+        names.sort();
+
+        let mut targets = Vec::with_capacity(names.len());
+        for name in names {
+            let sin = singularity_name(&active.record.id, &name);
+            let files = self
+                .log_paths
+                .resolve(&sin)
+                .map_err(|e| ServiceError::msg(e.to_string()))?;
+            targets.push(InstanceLogTarget { name, files });
+        }
+        Ok(targets)
     }
 
     /// Resolve and open a work-area file for streaming read.

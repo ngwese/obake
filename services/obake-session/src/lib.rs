@@ -8,6 +8,7 @@ pub mod config;
 pub mod graphql;
 pub mod launch;
 pub mod links;
+pub mod logs;
 pub mod paths;
 pub mod service;
 pub mod shapes;

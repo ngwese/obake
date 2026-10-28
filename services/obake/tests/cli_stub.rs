@@ -125,7 +125,38 @@ async fn put_file(
     axum::http::StatusCode::NO_CONTENT
 }
 
+use axum::extract::RawQuery;
 use axum::response::IntoResponse;
+
+async fn get_logs(
+    State(stub): State<Stub>,
+    Path(session_id): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> impl IntoResponse {
+    let mut instances = Vec::new();
+    let mut follow = String::from("-");
+    if let Some(q) = raw.as_deref() {
+        for pair in q.split('&') {
+            let mut parts = pair.splitn(2, '=');
+            let key = parts.next().unwrap_or("");
+            let value = parts.next().unwrap_or("");
+            match key {
+                "instance" => instances.push(value.to_string()),
+                "follow" => follow = value.to_string(),
+                _ => {}
+            }
+        }
+    }
+    stub.ops.lock().unwrap().push(format!(
+        "get-logs:{session_id}:follow={follow}:instances={}",
+        instances.join(",")
+    ));
+    (
+        axum::http::StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/plain")],
+        "[tone] hello\n".to_string(),
+    )
+}
 
 async fn spawn_stub() -> (SocketAddr, Arc<Mutex<Vec<String>>>, Stub) {
     let stub = Stub::default();
@@ -138,6 +169,10 @@ async fn spawn_stub() -> (SocketAddr, Arc<Mutex<Vec<String>>>, Stub) {
         .route(
             "/api/v0/sessions/{session_id}/files/{*path}",
             get(get_file).put(put_file),
+        )
+        .route(
+            "/api/v0/sessions/{session_id}/logs",
+            get(get_logs),
         )
         .layer(DefaultBodyLimit::disable());
     let app = Router::new()
@@ -280,6 +315,38 @@ async fn file_get_put_http_and_session_flag() {
     assert!(recorded.iter().any(|o| o == "put-file:sess-old:patch.ck"));
     assert!(recorded.iter().any(|o| o == "put-file:sess-old:big.bin"));
     assert!(recorded.iter().any(|o| o == "get-file:sess-old:big.bin"));
+}
+
+#[tokio::test]
+async fn session_logs_query_shape() {
+    let (addr, ops, _stub) = spawn_stub().await;
+    let client = Client::new(Endpoint::Http {
+        url: format!("http://{addr}/"),
+        token: None,
+        fingerprint: None,
+    });
+
+    let mut sink = Vec::new();
+    let n = client
+        .session_logs(&[], false, &mut sink)
+        .await
+        .unwrap();
+    assert_eq!(n, 13);
+    assert_eq!(sink, b"[tone] hello\n");
+
+    let mut sink = Vec::new();
+    client
+        .session_logs(&["lead".into(), "harmony".into()], true, &mut sink)
+        .await
+        .unwrap();
+
+    let recorded = ops.lock().unwrap().clone();
+    assert!(recorded
+        .iter()
+        .any(|o| o == "get-logs:current:follow=-:instances="));
+    assert!(recorded
+        .iter()
+        .any(|o| o == "get-logs:current:follow=1:instances=lead,harmony"));
 }
 
 #[test]

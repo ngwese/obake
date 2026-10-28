@@ -14,7 +14,7 @@ use async_graphql::http::GraphiQLSource;
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse, GraphQLSubscription};
 use axum::body::Body;
 use http_body_util::BodyExt;
-use axum::extract::{DefaultBodyLimit, Extension, Json, Path, Request, State};
+use axum::extract::{DefaultBodyLimit, Extension, Json, Path, RawQuery, Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
@@ -202,6 +202,147 @@ fn file_error_status(msg: &str) -> StatusCode {
     } else {
         StatusCode::INTERNAL_SERVER_ERROR
     }
+}
+
+fn log_error_status(msg: &str) -> StatusCode {
+    if msg.contains("no active session") || msg.contains("unknown instance") {
+        StatusCode::BAD_REQUEST
+    } else if msg.contains("no singularity logs") || msg.contains("unknown rig") {
+        StatusCode::NOT_FOUND
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    }
+}
+
+fn parse_follow(flag: Option<&str>) -> bool {
+    matches!(
+        flag.map(|s| s.to_ascii_lowercase()).as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
+}
+
+fn parse_logs_query(raw: Option<&str>) -> (Vec<String>, bool) {
+    let mut instances = Vec::new();
+    let mut follow = false;
+    let Some(raw) = raw else {
+        return (instances, follow);
+    };
+    for pair in raw.split('&') {
+        let mut parts = pair.splitn(2, '=');
+        let key = parts.next().unwrap_or("");
+        let value = parts.next().unwrap_or("");
+        let key = percent_decode(key);
+        let value = percent_decode(value);
+        match key.as_str() {
+            "instance" => {
+                if !value.is_empty() {
+                    instances.push(value);
+                }
+            }
+            "follow" => follow = parse_follow(Some(&value)),
+            _ => {}
+        }
+    }
+    (instances, follow)
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(h), Some(l)) = (
+                (bytes[i + 1] as char).to_digit(16),
+                (bytes[i + 2] as char).to_digit(16),
+            ) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        if bytes[i] == b'+' {
+            out.push(b' ');
+        } else {
+            out.push(bytes[i]);
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+async fn get_session_logs(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let (instances, follow) = parse_logs_query(raw.as_deref());
+    debug!(
+        target: "obake_session::http",
+        "logs GET session={} follow={} instances={:?}",
+        session_id,
+        follow,
+        instances
+    );
+    if session_id != "current" {
+        // Active-session only for this change; reject other ids.
+        if state.service.resolve_session_id(&session_id).is_err() {
+            return (StatusCode::NOT_FOUND, "no active session").into_response();
+        }
+        let active = state.service.session();
+        let Some(active) = active else {
+            return (StatusCode::BAD_REQUEST, "no active session").into_response();
+        };
+        if active.record.id != session_id {
+            return (
+                StatusCode::BAD_REQUEST,
+                "only the active session logs are available",
+            )
+                .into_response();
+        }
+    }
+    let targets = match state.service.session_log_targets(&instances) {
+        Ok(t) => t,
+        Err(e) => {
+            let msg = e.to_string();
+            return (log_error_status(&msg), msg).into_response();
+        }
+    };
+    let service = state.service.clone();
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Vec<u8>, io::Error>>(32);
+    tokio::task::spawn_blocking(move || {
+        let tx_err = tx.clone();
+        let result = crate::logs::stream_instance_logs(
+            &targets,
+            follow,
+            || service.session().is_some(),
+            |chunk| {
+                tx.blocking_send(Ok(chunk.to_vec()))
+                    .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "client gone"))
+            },
+        );
+        if let Err(e) = result {
+            let _ = tx_err.blocking_send(Err(e));
+        }
+    });
+    let stream = async_stream::stream! {
+        let mut rx = rx;
+        while let Some(item) = rx.recv().await {
+            match item {
+                Ok(bytes) => yield Ok::<_, io::Error>(bytes),
+                Err(e) => {
+                    yield Err(e);
+                    break;
+                }
+            }
+        }
+    };
+    (
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        Body::from_stream(stream),
+    )
+        .into_response()
 }
 
 async fn get_session_file(
@@ -442,6 +583,10 @@ fn app_router(schema: AppSchema, service: Arc<Service>, require_auth: bool) -> R
         .route(
             &format!("{API_V0}/sessions/{{session_id}}/files/{{*path}}"),
             get(get_session_file).put(put_session_file),
+        )
+        .route(
+            &format!("{API_V0}/sessions/{{session_id}}/logs"),
+            get(get_session_logs),
         )
         .route(
             &format!("{API_V0}/rigs/{{name}}/package"),

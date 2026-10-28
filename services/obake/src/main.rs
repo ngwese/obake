@@ -182,6 +182,14 @@ enum SessionCmd {
     Stop,
     /// Delete an inactive recorded session.
     Delete { id: String },
+    /// Stream instance logs from the active session.
+    Log {
+        /// Rig instance names (omit for all).
+        instances: Vec<String>,
+        /// Keep reading as logs grow.
+        #[arg(short = 'f', long)]
+        follow: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -452,6 +460,13 @@ async fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ),
             SessionCmd::Stop => (Kind::Stop, client.stop().await?),
             SessionCmd::Delete { id } => (Kind::DeleteSession, client.delete_session(&id).await?),
+            SessionCmd::Log { instances, follow } => {
+                let mut stdout = tokio::io::stdout();
+                client
+                    .session_logs(&instances, follow, &mut stdout)
+                    .await?;
+                return Ok(());
+            }
         },
         Commands::Link { action } => match action {
             LinkCmd::Set { links } => {

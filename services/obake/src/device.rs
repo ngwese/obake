@@ -282,9 +282,6 @@ pub fn validate_file(
     Ok(path.to_path_buf())
 }
 
-/// Stage directory on the device for pushed bundles.
-pub const REMOTE_STAGE_DIR: &str = "/home/.obake-update";
-
 /// `obake device update --target user@host PATH [--force]`.
 pub fn update(target: &str, path: &Path, force: bool) -> Result<(), DeviceError> {
     validate_ssh_target(target)?;
@@ -303,8 +300,10 @@ pub fn update(target: &str, path: &Path, force: bool) -> Result<(), DeviceError>
         .and_then(|n| n.to_str())
         .ok_or_else(|| DeviceError::msg("bundle basename"))?;
     eprintln!("obake: selected {}", local.display());
-    let remote = format!("{REMOTE_STAGE_DIR}/{basename}");
-    ssh_run(target, &format!("mkdir -p {REMOTE_STAGE_DIR}"))?;
+    // Stage under the SSH user's home — `/home/.obake-update` is only
+    // writable by root (HTTPS fetch path inside obake-update).
+    let stage_dir = remote_stage_dir(target)?;
+    let remote = format!("{stage_dir}/{basename}");
     eprintln!("obake: copying to {target}:{remote}");
     scp_to(target, &local, &remote)?;
     let apply = format!("obake-update apply --cleanup --reboot {remote}");
@@ -324,6 +323,21 @@ pub fn update(target: &str, path: &Path, force: bool) -> Result<(), DeviceError>
             }
         }
     }
+}
+
+/// Create `$HOME/.obake-update` on the target and return its absolute path.
+fn remote_stage_dir(target: &str) -> Result<String, DeviceError> {
+    let out = ssh_capture(
+        target,
+        "mkdir -p \"$HOME/.obake-update\" && printf %s \"$HOME/.obake-update\"",
+    )?;
+    let dir = out.trim();
+    if dir.is_empty() || !dir.starts_with('/') {
+        return Err(DeviceError::msg(format!(
+            "could not resolve remote stage dir: {out:?}"
+        )));
+    }
+    Ok(dir.to_string())
 }
 
 fn validate_ssh_target(target: &str) -> Result<(), DeviceError> {
@@ -347,10 +361,6 @@ fn ssh_capture(target: &str, remote: &str) -> Result<String, DeviceError> {
         return Err(DeviceError::msg(format!("ssh exited {}", output.status)));
     }
     String::from_utf8(output.stdout).map_err(|e| DeviceError::msg(format!("ssh utf8: {e}")))
-}
-
-fn ssh_run(target: &str, remote: &str) -> Result<(), DeviceError> {
-    ssh_status(Command::new("ssh").arg(target).arg(remote))
 }
 
 fn ssh_run_tty(target: &str, remote: &str) -> Result<(), DeviceError> {

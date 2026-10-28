@@ -50,7 +50,7 @@ obake device update --target obake@studio.local ./obake-0.7.0-b.raucb --force
 `device update` uses SSH only (no GraphQL). It probes `obake-update
 status`, selects `obake-<semver>-<inactive-slot>.raucb` (directory: newest
 semver ≥ device version; file: slot and semver checks unless `--force`),
-copies the bundle to `/home/.obake-update/`, and runs
+copies the bundle to `$HOME/.obake-update/` on the device, and runs
 `obake-update apply --cleanup --reboot` on the staged path.
 
 ## Output

@@ -74,12 +74,13 @@ case "$cmd" in
     echo "pending/activated:"
     exit 0
     ;;
-  "mkdir -p /home/.obake-update")
+  'mkdir -p "$HOME/.obake-update" && printf %s "$HOME/.obake-update"')
+    printf '%s' '/home/obake/.obake-update'
     exit 0
     ;;
-  "obake-update apply --cleanup --reboot /home/.obake-update/obake-0.8.0-a.raucb")
-    echo "obake-update: installing /home/.obake-update/obake-0.8.0-a.raucb (local)" >&2
-    echo "obake-update: removed /home/.obake-update/obake-0.8.0-a.raucb" >&2
+  "obake-update apply --cleanup --reboot /home/obake/.obake-update/obake-0.8.0-a.raucb")
+    echo "obake-update: installing /home/obake/.obake-update/obake-0.8.0-a.raucb (local)" >&2
+    echo "obake-update: removed /home/obake/.obake-update/obake-0.8.0-a.raucb" >&2
     echo "obake-update: rebooting" >&2
     exit 0
     ;;
@@ -99,7 +100,7 @@ esac
             r#"#!/bin/sh
 echo "scp $*" >>"{log}"
 case "$*" in
-  *"obake@studio.local:/home/.obake-update/obake-0.8.0-a.raucb")
+  *"obake@studio.local:/home/obake/.obake-update/obake-0.8.0-a.raucb")
     exit 0
     ;;
   *)
@@ -121,7 +122,7 @@ esac
     assert!(logged.contains("scp "), "{logged}");
     assert!(
         logged.contains(
-            "obake-update apply --cleanup --reboot /home/.obake-update/obake-0.8.0-a.raucb"
+            "obake-update apply --cleanup --reboot /home/obake/.obake-update/obake-0.8.0-a.raucb"
         ),
         "{logged}"
     );
